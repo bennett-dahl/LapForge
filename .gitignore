@@ -16,5 +16,5 @@ dist/
 build/
 
 # Local-only data (not in git)
-TirePressure/data/tire_pressure.db
+TirePressure/data/race_data.db
 Datasets/

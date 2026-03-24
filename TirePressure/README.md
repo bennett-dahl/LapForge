@@ -23,7 +23,7 @@ Then open **http://127.0.0.1:5000** in a browser.
 
 ## Data
 
-- SQLite DB: `TirePressure/data/tire_pressure.db`
+- SQLite DB: `TirePressure/data/race_data.db`
 - Uploaded files copied to: `TirePressure/data/uploads/<session_id>.txt`
 
 ## Plan

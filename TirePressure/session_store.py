@@ -12,17 +12,25 @@ from .models import CarDriver, SavedComparison, Session, SessionType, TireSet, T
 
 
 def _default_db_path() -> Path:
-    return Path(__file__).resolve().parent / "data" / "tire_pressure.db"
+    return Path(__file__).resolve().parent / "data" / "race_data.db"
 
 
 def _ensure_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _migrate_old_db(db_path: Path) -> None:
+    """Auto-rename legacy tire_pressure.db to race_data.db if needed."""
+    old = db_path.parent / "tire_pressure.db"
+    if not db_path.exists() and old.exists():
+        old.rename(db_path)
+
+
 class SessionStore:
     def __init__(self, db_path: str | Path | None = None):
         self.db_path = Path(db_path) if db_path else _default_db_path()
         _ensure_dir(self.db_path)
+        _migrate_old_db(self.db_path)
         self._init_schema()
 
     def _conn(self) -> sqlite3.Connection:
