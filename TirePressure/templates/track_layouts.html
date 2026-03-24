@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Track Maps{% endblock %}
+{% block content %}
+<h1>Track Maps</h1>
+<p>Manage saved track map geometries. Each map is derived from a specific session's fastest lap GPS data. You can rename, delete, or create new maps from any session.</p>
+
+<div style="margin-bottom:1rem;">
+  <button class="btn" id="btn-new-layout">Create New Track Map</button>
+</div>
+
+{% if layouts %}
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Track</th>
+      <th>Source Session</th>
+      <th>Lap</th>
+      <th>Created</th>
+      <th style="width:10rem;"></th>
+    </tr>
+  </thead>
+  <tbody id="layouts-tbody">
+    {% for layout in layouts %}
+    <tr data-id="{{ layout.id }}">
+      <td>
+        <span class="tl-name-display">{{ layout.name }}</span>
+        <input class="tl-name-input" type="text" value="{{ layout.name }}" style="display:none; width:100%;">
+      </td>
+      <td>{{ layout.track_name }}</td>
+      <td>
+        {% if layout.source_session_id and layout.source_session_id in session_map %}
+          {% set src = session_map[layout.source_session_id] %}
+          <a href="{{ url_for('session_detail', id=layout.source_session_id) }}">{{ src.track }} — {{ src.session_type.value }}</a>
+        {% elif layout.source_session_id %}
+          <span class="text-muted">{{ layout.source_session_id[:8] }}…</span>
+        {% else %}
+          <span class="text-muted">—</span>
+        {% endif %}
+      </td>
+      <td>{{ layout.source_lap_index if layout.source_lap_index is not none else '—' }}</td>
+      <td>{{ layout.created_at[:10] if layout.created_at else '—' }}</td>
+      <td>
+        <button class="btn btn-sm tl-btn-rename" data-id="{{ layout.id }}">Rename</button>
+        <button class="btn btn-sm btn-danger tl-btn-delete" data-id="{{ layout.id }}">Delete</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No track maps saved yet. They are automatically created when you save track sections from the section editor, or you can create one manually below.</p>
+{% endif %}
+
+<div class="modal-overlay" id="modal-new-layout" style="display:none;">
+  <div class="modal-box" style="max-width:500px;">
+    <h3>Create Track Map</h3>
+    <div style="margin-bottom:0.75rem;">
+      <label>Name</label>
+      <input type="text" id="new-layout-name" style="width:100%;" placeholder="e.g. Daytona — Race 1 Fastest">
+    </div>
+    <div style="margin-bottom:0.75rem;">
+      <label>Source Session</label>
+      <select id="new-layout-session" style="width:100%;">
+        <option value="">— Select a session —</option>
+        {% for s in session_map.values() | sort(attribute='track') %}
+        <option value="{{ s.id }}">{{ s.track }} — {{ s.session_type.value }} ({{ s.driver }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1rem;">
+      <button class="btn" id="modal-new-cancel">Cancel</button>
+      <button class="btn btn-primary" id="modal-new-save">Create</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var modal = document.getElementById('modal-new-layout');
+
+  document.getElementById('btn-new-layout').addEventListener('click', function() {
+    modal.style.display = 'flex';
+  });
+  document.getElementById('modal-new-cancel').addEventListener('click', function() {
+    modal.style.display = 'none';
+  });
+  modal.addEventListener('click', function(e) {
+    if (e.target === modal) modal.style.display = 'none';
+  });
+
+  document.getElementById('modal-new-save').addEventListener('click', function() {
+    var name = document.getElementById('new-layout-name').value.trim();
+    var sessionId = document.getElementById('new-layout-session').value;
+    if (!name) { alert('Please enter a name.'); return; }
+    if (!sessionId) { alert('Please select a source session.'); return; }
+    fetch('/api/track-layouts', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name, source_session_id: sessionId})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.ok) { location.reload(); }
+      else { alert(d.error || 'Failed to create track map.'); }
+    });
+  });
+
+  document.querySelectorAll('.tl-btn-rename').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var row = btn.closest('tr');
+      var display = row.querySelector('.tl-name-display');
+      var input = row.querySelector('.tl-name-input');
+      if (input.style.display === 'none') {
+        display.style.display = 'none';
+        input.style.display = '';
+        input.focus();
+        input.select();
+        btn.textContent = 'Save';
+      } else {
+        var newName = input.value.trim();
+        if (!newName) { alert('Name cannot be empty.'); return; }
+        fetch('/api/track-layouts/' + btn.dataset.id, {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name: newName})
+        }).then(function(r) { return r.json(); }).then(function(d) {
+          if (d.ok) {
+            display.textContent = newName;
+            display.style.display = '';
+            input.style.display = 'none';
+            btn.textContent = 'Rename';
+          } else { alert(d.error || 'Failed to rename.'); }
+        });
+      }
+    });
+  });
+
+  document.querySelectorAll('.tl-btn-delete').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      if (!confirm('Delete this track map? Sessions using it will revert to auto-detection.')) return;
+      fetch('/api/track-layouts/' + btn.dataset.id, {
+        method: 'DELETE'
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.ok) { btn.closest('tr').remove(); }
+        else { alert(d.error || 'Failed to delete.'); }
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}

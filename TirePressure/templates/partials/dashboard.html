@@ -1,0 +1,68 @@
+<div class="dash-header">
+  <h1>{{ session.track }} — {{ session.session_type.value }}</h1>
+  {% if car_driver %}
+  <span class="dash-meta">{{ car_driver.display_name() }} &middot; {{ session.car }}</span>
+  {% endif %}
+</div>
+
+<div class="dash-toolbar">
+  <span>Pressure:
+    <a href="{{ url_for('session_detail', id=session.id, unit='psi', tool='dashboard') }}" {% if use_psi %}class="active" style="font-weight:700"{% endif %}>PSI</a>
+    <a href="{{ url_for('session_detail', id=session.id, unit='bar', tool='dashboard') }}" {% if not use_psi %}class="active" style="font-weight:700"{% endif %}>Bar</a>
+  </span>
+  <span style="color:var(--border);">|</span>
+  <a href="{{ url_for('session_detail', id=session.id, tool='section_generator', unit='psi' if use_psi else 'bar') }}" class="btn btn-secondary">Edit Sections</a>
+  <a href="{{ url_for('session_detail', id=session.id, tool='section_metrics', unit='psi' if use_psi else 'bar') }}" class="btn btn-secondary">Section Metrics</a>
+  <a href="{{ url_for('compare_list', ids=session.id) }}" class="btn btn-secondary">Compare</a>
+</div>
+
+{% include "partials/session_settings.html" %}
+
+{# Lap selector bar #}
+<div class="lap-bar" id="lap-bar"></div>
+
+{% if needs_reprocess %}
+<div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:0.5rem 0.75rem;margin-bottom:0.5rem;border-radius:4px;font-size:0.85rem;">
+  <strong>New analysis features available.</strong>
+  <form action="{{ url_for('session_restore', id=session.id) }}" method="post" style="display:inline;">
+    <button type="submit" class="btn" style="padding:0.2rem 0.5rem;font-size:0.8rem;margin-left:0.5rem;">Reprocess now</button>
+  </form>
+</div>
+{% endif %}
+
+{# Modular dashboard container — all panels flow here #}
+<div class="dash-modules" id="dash-modules-root"></div>
+
+{# Add module button + type selector #}
+<div class="dash-add-row">
+  <div class="dash-add-dropdown" id="add-module-dropdown">
+    <button type="button" class="btn btn-secondary dash-add-chart" id="btn-add-module">+ Add Module</button>
+    <div class="add-menu" id="add-menu" style="display:none;">
+      <button type="button" data-type="chart" class="add-menu-item">Chart</button>
+      <button type="button" data-type="map" class="add-menu-item">Track Map</button>
+      <button type="button" data-type="readout" class="add-menu-item">Values at Cursor</button>
+      <button type="button" data-type="lap-times" class="add-menu-item">Lap Times</button>
+      <button type="button" data-type="tire-summary" class="add-menu-item">Tire Pressure Summary</button>
+    </div>
+  </div>
+</div>
+
+{# Server-rendered data for tire summary (consumed by JS) #}
+{% if summary %}
+<script id="tire-summary-data" type="application/json">{{ summary | tojson }}</script>
+{% endif %}
+
+{# Channel picker modal #}
+<div class="modal-overlay" id="channel-picker-overlay" style="display:none;">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3>Select Channels</h3>
+      <button type="button" class="modal-close" id="modal-cancel">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-channel-list"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn" id="modal-apply">Apply</button>
+      <button type="button" class="btn btn-secondary" id="modal-cancel-btn">Cancel</button>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+  <h1>Settings</h1>
+  <p class="muted">Site-wide defaults. Per-session target pressure is set on each session's detail page.</p>
+
+  <form method="post">
+    <div class="settings-grid" style="max-width:36rem;">
+      <div class="settings-group">
+        <label class="settings-label">Default target pressure (PSI)</label>
+        <input type="number" step="0.1" min="14" max="35" name="default_target_pressure_psi"
+          value="{{ prefs.default_target_pressure_psi }}" required class="settings-input">
+        <p class="muted" style="margin-top:0.25rem;font-size:0.75rem;">Applied to new sessions when created.</p>
+      </div>
+
+      <div class="settings-group">
+        <label class="settings-label">Default temperature unit</label>
+        <div class="settings-radios">
+          <label><input type="radio" name="default_temp_unit" value="c" {% if prefs.default_temp_unit == 'c' %}checked{% endif %}> °C</label>
+          <label><input type="radio" name="default_temp_unit" value="f" {% if prefs.default_temp_unit == 'f' %}checked{% endif %}> °F</label>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <label class="settings-label">Default pressure unit</label>
+        <div class="settings-radios">
+          <label><input type="radio" name="default_pressure_unit" value="psi" {% if prefs.default_pressure_unit == 'psi' %}checked{% endif %}> PSI</label>
+          <label><input type="radio" name="default_pressure_unit" value="bar" {% if prefs.default_pressure_unit == 'bar' %}checked{% endif %}> Bar</label>
+        </div>
+        <p class="muted" style="margin-top:0.25rem;font-size:0.75rem;">You can still toggle PSI/Bar on any session page.</p>
+      </div>
+
+      <div class="settings-group">
+        <label class="settings-label">Default distance unit</label>
+        <div class="settings-radios">
+          <label><input type="radio" name="default_distance_unit" value="km" {% if prefs.default_distance_unit == 'km' %}checked{% endif %}> km / km/h</label>
+          <label><input type="radio" name="default_distance_unit" value="mi" {% if prefs.default_distance_unit == 'mi' %}checked{% endif %}> mi / mph</label>
+        </div>
+      </div>
+    </div>
+
+    <h2 style="margin-top:2rem;">Section Detection</h2>
+    <p class="muted">Tune the auto-detection of corners and straights when generating track sections.</p>
+    <div class="settings-grid" style="max-width:36rem;">
+      <div class="settings-group">
+        <label class="settings-label">Lateral G threshold</label>
+        <input type="number" step="0.01" min="0.05" max="1.0" name="section_lat_g_threshold"
+          value="{{ prefs.section_lat_g_threshold if prefs.section_lat_g_threshold is not none and prefs.section_lat_g_threshold != '' else '' }}"
+          placeholder="Auto" class="settings-input">
+        <p class="muted" style="margin-top:0.25rem;font-size:0.75rem;">Leave blank for adaptive threshold. Typical range: 0.15–0.50 G.</p>
+      </div>
+
+      <div class="settings-group">
+        <label class="settings-label">Min corner length (m)</label>
+        <input type="number" step="1" min="5" max="200" name="section_min_corner_length_m"
+          value="{{ prefs.section_min_corner_length_m }}" class="settings-input">
+        <p class="muted" style="margin-top:0.25rem;font-size:0.75rem;">Corners shorter than this are ignored. Default: 30 m.</p>
+      </div>
+
+      <div class="settings-group">
+        <label class="settings-label">Merge gap (m)</label>
+        <input type="number" step="1" min="5" max="200" name="section_merge_gap_m"
+          value="{{ prefs.section_merge_gap_m }}" class="settings-input">
+        <p class="muted" style="margin-top:0.25rem;font-size:0.75rem;">Corners within this distance are merged into one. Default: 50 m.</p>
+      </div>
+    </div>
+
+    <p style="margin-top:1rem;">
+      <button type="submit" class="btn">Save</button>
+      <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
+    </p>
+  </form>
+{% endblock %}

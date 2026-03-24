@@ -1,0 +1,69 @@
+<div class="sec-editor" id="section-editor">
+  <h2>Track Sections</h2>
+  {% if tool_data.lap_time %}
+  <p class="muted">
+    Track map: Lap {{ (tool_data.lap_index or 0) + 1 }} ({{ '%.2f'|format(tool_data.lap_time) }} s) &mdash; {{ tool_data.sections|length }} sections.
+    <a href="{{ url_for('track_layouts_list') }}" style="margin-left:0.5rem;font-size:0.8rem;">Manage Track Maps</a>
+  </p>
+  {% endif %}
+
+  {# Row 1: map + sections side by side #}
+  <div class="sec-top-row" id="sec-top-row">
+    <div class="sec-panel sec-map-panel" id="sec-map-panel">
+      <div id="sections-map-container" class="sec-map"></div>
+    </div>
+    <div class="sec-resize-h" id="sec-resize-h" title="Drag to resize"></div>
+    <div class="sec-panel sec-table-panel" id="sec-table-panel">
+      <div class="sec-toolbar">
+        <button type="button" class="btn" id="btn-regenerate" title="Auto-detect sections using lateral G / GPS data">Regenerate Sections</button>
+        <button type="button" class="btn" id="btn-add-section" title="Add section at end">+ Add</button>
+        <button type="button" class="btn btn-secondary" id="btn-save-sections">Save</button>
+      </div>
+      <div class="sec-table-scroll">
+        <table id="sections-table" class="sec-table">
+          <thead>
+            <tr>
+              <th style="width:1.5rem;"></th>
+              <th>Section</th>
+              <th style="width:2rem;">Type</th>
+              <th>Start (m)</th>
+              <th>End (m)</th>
+              <th>Len</th>
+              <th style="width:5rem;"></th>
+            </tr>
+          </thead>
+          <tbody id="sec-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {# Vertical resize handle between top row and chart #}
+  <div class="sec-resize-v" id="sec-resize-v" title="Drag to resize"></div>
+
+  {# Row 2: cursor readout + chart full width #}
+  <div class="sec-cursor-readout" id="sec-cursor-readout">Distance: — m</div>
+  <div class="sec-chart-row" id="sec-chart-row">
+    <div id="sec-chart-container" class="sec-chart-wrap">
+      <canvas id="sec-chart-canvas"></canvas>
+    </div>
+    <div class="sec-chart-toolbar">
+      <button type="button" class="panel-btn" id="btn-sec-channels">Select Channels</button>
+    </div>
+  </div>
+</div>
+
+{# Channel picker modal #}
+<div class="modal-overlay" id="sec-channel-overlay" style="display:none;">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3>Chart Channels</h3>
+      <button type="button" class="modal-close" id="sec-ch-close">&times;</button>
+    </div>
+    <div class="modal-body" id="sec-ch-list"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn" id="sec-ch-apply">Apply</button>
+      <button type="button" class="btn btn-secondary" id="sec-ch-cancel">Cancel</button>
+    </div>
+  </div>
+</div>

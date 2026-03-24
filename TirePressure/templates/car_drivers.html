@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Car/Driver combinations{% endblock %}
+{% block content %}
+  <h1>Car / Driver combinations</h1>
+  <p><a href="{{ url_for('car_driver_add') }}" class="btn">Add car/driver</a></p>
+  <table>
+    <thead>
+      <tr><th>Car</th><th>Driver</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for cd in car_drivers %}
+      <tr>
+        <td>{{ cd.car_identifier }}</td>
+        <td>{{ cd.driver_name }}</td>
+        <td>
+          <a href="{{ url_for('car_driver_edit', id=cd.id) }}">Edit</a>
+          <form action="{{ url_for('car_driver_delete', id=cd.id) }}" method="post" style="display:inline;" onsubmit="return confirm('Delete this car/driver?');">
+            <button type="submit" class="btn btn-danger" style="padding:0.2rem 0.5rem;font-size:0.75rem;">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not car_drivers %}
+  <p>No car/driver combinations yet. <a href="{{ url_for('car_driver_add') }}">Add one</a> to start uploading sessions.</p>
+  {% endif %}
+{% endblock %}

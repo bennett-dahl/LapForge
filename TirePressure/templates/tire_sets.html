@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Tire sets{% endblock %}
+{% block content %}
+  <h1>Tire sets</h1>
+  <p>Set morning pressures (cold, next morning after bleed-down) for each tire set. These are your recommended starting pressures for race.</p>
+  <p>
+    <a href="{{ url_for('tire_set_add') }}" class="btn">Add tire set</a>
+    {% if car_drivers %}
+    <span style="margin-left:1rem;">Filter by car/driver:
+      <a href="{{ url_for('tire_sets_list', pressure_unit=pressure_unit) }}">All</a>
+      {% for cd in car_drivers %}
+      | <a href="{{ url_for('tire_sets_list', car_driver_id=cd.id, pressure_unit=pressure_unit) }}">{{ cd.display_name() }}</a>
+      {% endfor %}
+    </span>
+    {% endif %}
+    <span style="margin-left:1rem;">Pressures: <a href="{{ url_for('tire_sets_list', car_driver_id=filter_car_driver_id, pressure_unit='bar') }}" {% if pressure_unit == 'bar' %}class="active"{% endif %}>Bar</a> <a href="{{ url_for('tire_sets_list', car_driver_id=filter_car_driver_id, pressure_unit='psi') }}" {% if pressure_unit == 'psi' %}class="active"{% endif %}>PSI</a></span>
+  </p>
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Car/Driver</th><th>FL ({{ pressure_unit }})</th><th>FR</th><th>RL</th><th>RR</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for ts in tire_sets %}
+      <tr>
+        <td>{{ ts.name }}</td>
+        <td>{% if ts.car_driver_id %}{% for cd in car_drivers %}{% if cd.id == ts.car_driver_id %}{{ cd.display_name() }}{% endif %}{% endfor %}{% else %}—{% endif %}</td>
+        <td>{{ '%.2f'|format(ts.morning_pressure_fl * 14.5038 if pressure_unit == 'psi' else ts.morning_pressure_fl) if ts.morning_pressure_fl is not none else '—' }}</td>
+        <td>{{ '%.2f'|format(ts.morning_pressure_fr * 14.5038 if pressure_unit == 'psi' else ts.morning_pressure_fr) if ts.morning_pressure_fr is not none else '—' }}</td>
+        <td>{{ '%.2f'|format(ts.morning_pressure_rl * 14.5038 if pressure_unit == 'psi' else ts.morning_pressure_rl) if ts.morning_pressure_rl is not none else '—' }}</td>
+        <td>{{ '%.2f'|format(ts.morning_pressure_rr * 14.5038 if pressure_unit == 'psi' else ts.morning_pressure_rr) if ts.morning_pressure_rr is not none else '—' }}</td>
+        <td>
+          <a href="{{ url_for('tire_set_edit', id=ts.id) }}">Edit</a>
+          <form action="{{ url_for('tire_set_delete', id=ts.id) }}" method="post" style="display:inline;" onsubmit="return confirm('Delete this tire set?');">
+            <button type="submit" class="btn btn-danger" style="padding:0.2rem 0.5rem;font-size:0.75rem;">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p><em>Stored in bar. Toggle above for display unit. Session detail also has pressure and temp toggles.</em></p>
+  {% if not tire_sets %}
+  <p>No tire sets yet. <a href="{{ url_for('tire_set_add') }}">Add one</a> and set morning pressures (FL, FR, RL, RR).</p>
+  {% endif %}
+{% endblock %}

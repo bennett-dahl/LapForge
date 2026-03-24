@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}{{ comparison.name }} — Compare{% endblock %}
+
+{% block content %}
+<div class="dash-header">
+  <h1 id="compare-title" style="cursor:pointer;" title="Click to rename">{{ comparison.name }}</h1>
+  <span class="dash-meta" id="compare-session-count">{{ comparison.session_ids|length }} session{{ 's' if comparison.session_ids|length != 1 else '' }}</span>
+</div>
+
+<div class="dash-toolbar" style="flex-wrap:wrap;gap:0.5rem;">
+  <span>Pressure:
+    <a href="{{ url_for('compare_dashboard', id=comparison.id, unit='psi') }}" {% if use_psi %}class="active" style="font-weight:700"{% endif %}>PSI</a>
+    <a href="{{ url_for('compare_dashboard', id=comparison.id, unit='bar') }}" {% if not use_psi %}class="active" style="font-weight:700"{% endif %}>Bar</a>
+  </span>
+  <span style="color:var(--border);">|</span>
+  <div id="compare-sessions-bar" style="display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center;">
+    {% for sid in comparison.session_ids %}
+    <span class="compare-badge" data-sid="{{ sid }}">
+      <span class="compare-badge-label">{{ sid[:8] }}</span>
+      <button class="compare-badge-remove" title="Remove session" data-sid="{{ sid }}">&times;</button>
+    </span>
+    {% endfor %}
+  </div>
+  <button class="btn btn-secondary" id="btn-add-session" style="white-space:nowrap;">+ Add Session</button>
+  <span style="color:var(--border);">|</span>
+  <a href="{{ url_for('compare_list') }}" class="btn btn-secondary">All Comparisons</a>
+</div>
+
+{# Lap selector bar #}
+<div class="lap-bar" id="lap-bar"></div>
+
+{# Modular dashboard container #}
+<div class="dash-modules" id="dash-modules-root"></div>
+
+{# Add module button + type selector #}
+<div class="dash-add-row">
+  <div class="dash-add-dropdown" id="add-module-dropdown">
+    <button type="button" class="btn btn-secondary dash-add-chart" id="btn-add-module">+ Add Module</button>
+    <div class="add-menu" id="add-menu" style="display:none;">
+      <button type="button" data-type="chart" class="add-menu-item">Chart</button>
+      <button type="button" data-type="readout" class="add-menu-item">Values at Cursor</button>
+      <button type="button" data-type="lap-times" class="add-menu-item">Lap Times</button>
+    </div>
+  </div>
+</div>
+
+{# Channel picker modal #}
+<div class="modal-overlay" id="channel-picker-overlay" style="display:none;">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3>Select Channels</h3>
+      <button type="button" class="modal-close" id="modal-cancel">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-channel-list"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn" id="modal-apply">Apply</button>
+      <button type="button" class="btn btn-secondary" id="modal-cancel-btn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+{# Add session modal #}
+<div class="modal-overlay" id="add-session-overlay" style="display:none;">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3>Add Session</h3>
+      <button type="button" class="modal-close" id="add-sess-close">&times;</button>
+    </div>
+    <div class="modal-body" id="add-sess-list" style="max-height:400px;overflow-y:auto;"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" id="add-sess-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="{{ url_for('static', filename='cursor-sync.js') }}"></script>
+  <script src="{{ url_for('static', filename='map-widget.js') }}"></script>
+  <script src="{{ url_for('static', filename='telemetry-chart.js') }}"></script>
+  <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+  <script>
+  (function() {
+    var dashData = {{ dashboard_data | tojson }};
+    var compId = {{ comparison.id | tojson }};
+    var currentIds = {{ comparison.session_ids | tojson }};
+
+    /* Update session badge labels from loaded data */
+    if (dashData.sessions) {
+      dashData.sessions.forEach(function(s) {
+        var badge = document.querySelector('.compare-badge[data-sid="' + s.id + '"] .compare-badge-label');
+        if (badge) badge.textContent = s.label;
+      });
+    }
+
+    initDashboard(dashData);
+
+    /* Rename comparison on title click */
+    var titleEl = document.getElementById('compare-title');
+    titleEl.addEventListener('click', function() {
+      var current = titleEl.textContent.trim();
+      var newName = prompt('Rename comparison:', current);
+      if (newName && newName.trim() && newName.trim() !== current) {
+        fetch('/api/comparisons/' + compId, {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name: newName.trim()})
+        }).then(function() { titleEl.textContent = newName.trim(); });
+      }
+    });
+
+    /* Remove session badges */
+    document.getElementById('compare-sessions-bar').addEventListener('click', function(e) {
+      var btn = e.target.closest('.compare-badge-remove');
+      if (!btn) return;
+      var sid = btn.dataset.sid;
+      if (!confirm('Remove this session from the comparison?')) return;
+      fetch('/api/comparisons/' + compId + '/sessions/' + sid, {method: 'DELETE'})
+        .then(function(r) { return r.json(); })
+        .then(function() { window.location.reload(); });
+    });
+
+    /* Add session modal */
+    var addOverlay = document.getElementById('add-session-overlay');
+    var addList = document.getElementById('add-sess-list');
+    document.getElementById('btn-add-session').addEventListener('click', function() {
+      addList.innerHTML = '<p class="muted">Loading…</p>';
+      addOverlay.style.display = 'flex';
+      fetch('/api/sessions/list')
+        .then(function(r) { return r.json(); })
+        .then(function(sessions) {
+          addList.innerHTML = '';
+          if (!sessions.length) { addList.innerHTML = '<p class="muted">No sessions found.</p>'; return; }
+          sessions.forEach(function(s) {
+            var already = currentIds.indexOf(s.id) >= 0;
+            var row = document.createElement('div');
+            row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:0.35rem 0;border-bottom:1px solid var(--border);';
+            row.innerHTML = '<span>' + s.label + '</span>';
+            if (already) {
+              var tag = document.createElement('span');
+              tag.className = 'muted'; tag.textContent = 'Added';
+              row.appendChild(tag);
+            } else {
+              var btn = document.createElement('button');
+              btn.className = 'btn'; btn.textContent = 'Add';
+              btn.style.cssText = 'padding:0.2rem 0.6rem;font-size:0.8rem;';
+              btn.addEventListener('click', function() {
+                btn.disabled = true; btn.textContent = 'Adding…';
+                fetch('/api/comparisons/' + compId + '/sessions', {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({session_id: s.id})
+                }).then(function() { window.location.reload(); });
+              });
+              row.appendChild(btn);
+            }
+            addList.appendChild(row);
+          });
+        });
+    });
+    function closeAddModal() { addOverlay.style.display = 'none'; }
+    document.getElementById('add-sess-close').addEventListener('click', closeAddModal);
+    document.getElementById('add-sess-cancel').addEventListener('click', closeAddModal);
+    addOverlay.addEventListener('click', function(e) { if (e.target === addOverlay) closeAddModal(); });
+  })();
+  </script>
+{% endblock %}

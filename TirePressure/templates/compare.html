@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Comparisons{% endblock %}
+{% block content %}
+  <h1>Comparisons</h1>
+
+  <div class="card" style="margin-bottom:1.5rem;">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+      <h2 style="margin:0;">Saved Comparisons</h2>
+      <button class="btn" id="btn-new-compare">+ New Comparison</button>
+    </div>
+
+    {% if saved_comparisons %}
+    <table class="lap-table" style="margin-top:0.75rem;">
+      <thead><tr><th>Name</th><th>Sessions</th><th></th></tr></thead>
+      <tbody>
+        {% for sc in saved_comparisons %}
+        <tr>
+          <td><a href="{{ url_for('compare_dashboard', id=sc.id) }}" style="font-weight:600;">{{ sc.name }}</a></td>
+          <td>{{ sc.session_ids|length }} session{{ 's' if sc.session_ids|length != 1 else '' }}</td>
+          <td style="text-align:right;">
+            <a href="{{ url_for('compare_dashboard', id=sc.id) }}" class="btn btn-secondary" style="padding:0.15rem 0.6rem;font-size:0.8rem;">Open</a>
+            <button class="btn btn-secondary btn-delete-compare" data-id="{{ sc.id }}" data-name="{{ sc.name }}" style="padding:0.15rem 0.6rem;font-size:0.8rem;">Delete</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted" style="margin-top:0.5rem;">No comparisons yet. Create one to start comparing sessions side by side.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Quick Start</h2>
+    <p class="muted">Select sessions to compare:</p>
+    {% if all_sessions %}
+    <form id="quick-compare-form">
+      <div style="max-height:300px;overflow-y:auto;margin-bottom:0.75rem;">
+      {% for s in all_sessions %}
+        <label style="display:block;padding:0.25rem 0;">
+          <input type="checkbox" name="session_ids" value="{{ s.id }}">
+          {{ s.track }} — {{ s.session_type.value }}
+        </label>
+      {% endfor %}
+      </div>
+      <div style="display:flex;gap:0.5rem;align-items:center;">
+        <input type="text" name="name" placeholder="Comparison name (optional)" style="max-width:20rem;">
+        <button type="submit" class="btn">Create & Open</button>
+      </div>
+    </form>
+    {% else %}
+    <p class="muted">No sessions uploaded yet. <a href="{{ url_for('upload') }}">Upload a session</a> to get started.</p>
+    {% endif %}
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  /* New comparison button */
+  document.getElementById('btn-new-compare').addEventListener('click', function() {
+    fetch('/api/comparisons', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: 'New Comparison'})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) { window.location.href = d.url; });
+  });
+
+  /* Quick compare form */
+  var qf = document.getElementById('quick-compare-form');
+  if (qf) {
+    qf.addEventListener('submit', function(e) {
+      e.preventDefault();
+      var checked = Array.from(qf.querySelectorAll('input[name="session_ids"]:checked')).map(function(cb) { return cb.value; });
+      if (!checked.length) { alert('Select at least one session.'); return; }
+      var name = (qf.querySelector('input[name="name"]').value || '').trim() || 'Comparison';
+      fetch('/api/comparisons', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, session_ids: checked})
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(d) { window.location.href = d.url; });
+    });
+  }
+
+  /* Delete buttons */
+  document.querySelectorAll('.btn-delete-compare').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      if (!confirm('Delete comparison "' + btn.dataset.name + '"?')) return;
+      fetch('/api/comparisons/' + btn.dataset.id, {method: 'DELETE'})
+        .then(function() { window.location.reload(); });
+    });
+  });
+})();
+</script>
+{% endblock %}
