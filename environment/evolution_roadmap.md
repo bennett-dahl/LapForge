@@ -9,9 +9,9 @@
 - **Phase 2b: COMPLETE** -- Brand identity applied (icons, splash, sidebar symbol, favicon, gold accent palette), OAuth credentials extracted from source into CI-injected `_build_defaults.json`
 - **Phase 3: COMPLETE** -- 186 tests (174 unit/integration + 12 Playwright e2e), pytest + pytest-cov, CI pytest step with `--cov-fail-under=50`
 - **Phase 4: COMPLETE** -- SPA Frontend Migration: React + TypeScript + Vite replacing all 21 Jinja2 templates; Flask is now a pure JSON API server
-- **Current version: v1.5.3** -- published, auto-update pipeline verified end-to-end
+- **Current version: v1.6.0** -- published, auto-update pipeline verified end-to-end
 - **Codebase:** 23 Python files (~6,700 lines), Flask routes now API-only, React SPA (frontend/ — ~30 TSX components), SQLite, Google Drive sync, OAuth
-- **Test suite:** 186 tests, 53% overall coverage; core modules: models 100%, channels 100%, config 95%, parser 88%, processing 83%, session_store 86%, bundle 97%
+- **Test suite:** 192 tests (rewritten for SPA), 53% overall coverage; core modules: models 100%, channels 100%, config 95%, parser 88%, processing 83%, session_store 86%, bundle 97%
 
 ---
 
@@ -29,13 +29,16 @@
 - **Session Store** ([LapForge/session_store.py](LapForge/session_store.py)): 37 tests -- CRUD for all 8 entity types, dashboard layouts, resolve_file_path
 - **Sync bundle** ([LapForge/sync/bundle.py](LapForge/sync/bundle.py)): 9 tests -- manifest, build/restore round-trip, hash skip, progress callbacks
 
-### 3b: API / Integration Tests
-- 35 tests via Flask test client (`app.test_client()`)
-- Covers: index, settings, car-drivers CRUD, tire sets, sessions (list/detail/edit/delete/unit toggle), upload (form + file + extension check), sections API, track layouts API, compare (CRUD + dashboard), dashboard templates, dashboard layouts, session list API, sync status
+### 3b: API / Integration Tests (rewritten for Phase 4)
+- 52 tests via Flask test client (`app.test_client()`)
+- Covers: SPA page routes (11 tests), car-drivers JSON API (6), tire-sets JSON API (6), sessions JSON API (8 incl. legacy form routes), settings API (2), auth API (1), upload JSON flow (3), track layouts API (3), sections API (2), comparisons API (5), dashboard templates (1), dashboard layouts (2), session list API (1), sync status (1)
+- Fixed 5 bugs in `app.py` where Phase 4 API routes called non-existent store methods (`save_*` → `add_*`/`update_*`)
 
-### 3c: Frontend Smoke Tests
-- 12 Playwright tests (headless Chromium) against real Flask server
-- Navigation, car-driver flow, session flow, upload + parse, compare, track layouts
+### 3c: Frontend Smoke Tests (rewritten for Phase 4)
+- 12 Playwright tests (headless Chromium) against real Flask server + SPA
+- Updated for React SPA: uses `#sidebar`, `.data-table`, `.modal-overlay` selectors; waits for client-side rendering
+- E2E tests skip gracefully if SPA not built (`cd frontend && npm run build:spa`)
+- Navigation, sidebar links, car-driver add via modal, sessions list/detail, upload + parse, compare, track layouts, settings tabs
 
 ### 3d: CI Integration
 - `pytest` step in [.github/workflows/build.yml](.github/workflows/build.yml) runs before PyInstaller freeze
@@ -113,7 +116,7 @@
 - Phase 1: Electron Shell + Flask Backend -- **DONE**
 - Phase 2: Auto-Updates + CI -- **DONE** (v1.5.0, update bar verified)
 - Phase 2b: Apply Brand Guide + Secrets Extraction -- **DONE**
-- Phase 3: Comprehensive Testing -- **DONE** (186 tests, 53% coverage)
-- Phase 4: SPA Frontend (React + TypeScript) -- **next up**
+- Phase 3: Comprehensive Testing -- **DONE** (192 tests, 53% coverage)
+- Phase 4: SPA Frontend (React + TypeScript) -- **DONE** (v1.6.0, 192 tests passing)
 - Phase 5: Rust Processing (napi-rs)
 - Phase 6: Node.js Backend + Drop Python

@@ -1,8 +1,8 @@
 # LapForge Conversation Context
 
 > Last updated: 2026-03-30
-> Current app version: v1.5.3
-> Phase 4 SPA migration complete
+> Current app version: v1.6.0
+> Phase 4 SPA migration complete, tests rewritten, build verified
 
 ---
 
@@ -62,8 +62,8 @@ electron/                  # Electron shell
   package.json             # electron-builder config, publish to GitHub Releases
   icons/                   # icon.png, icon.ico
 
-tests/                     # Phase 3 test suite (186 tests)
-  conftest.py              # Shared fixtures (isolated DB, Flask test client, sample data)
+tests/                     # Test suite (192 tests, rewritten for SPA)
+  conftest.py              # Shared fixtures (isolated DB, Flask test client, SPA stub, sample data)
   fixtures/sample_export.txt  # Synthetic Pi Toolbox export for deterministic tests
   test_models.py           # 17 tests
   test_config.py           # 12 tests
@@ -72,10 +72,10 @@ tests/                     # Phase 3 test suite (186 tests)
   test_processing.py       # 18 tests
   test_session_store.py    # 37 tests
   test_sync_bundle.py      # 9 tests
-  test_api.py              # 35 tests (Flask test client integration)
+  test_api.py              # 52 tests (JSON API endpoints, SPA page routes, legacy routes)
   e2e/
-    conftest.py            # Playwright fixtures (Flask server, browser, seeded data)
-    test_smoke.py          # 12 Playwright browser smoke tests
+    conftest.py            # Playwright fixtures (Flask server, SPA build check, seeded data)
+    test_smoke.py          # 12 Playwright browser smoke tests (React SPA selectors)
 
 .github/workflows/build.yml  # CI: pytest -> PyInstaller -> electron-builder -> GitHub Releases
 build.py                   # Local build script (PyInstaller + electron-builder)
@@ -103,9 +103,8 @@ brand/                     # Original brand assets (PDF, PNGs)
 
 ### Auto-Updates
 - `electron-updater` checks GitHub Releases
-- Gold notification bar at bottom of page (injected via `base.html` template script)
-- `lastUpdateStatus` replayed on MPA page navigation
-- `autoUpdaterInitialized` guard prevents duplicate event listeners
+- Native `dialog.showMessageBox` for "Update Ready" (Restart Now / Later) and user-initiated "No Updates" / "Error" feedback
+- `userInitiatedCheck` flag differentiates manual check from auto-check
 - Releases must be non-draft (`releaseType: release` in package.json)
 
 ### Secrets Management
@@ -145,50 +144,29 @@ brand/                     # Original brand assets (PDF, PNGs)
 
 ### Phase 3: Comprehensive Testing
 - `pytest` + `pytest-cov` + `playwright`
-- 174 unit/integration tests + 12 Playwright e2e tests = 186 total
+- 180 unit/integration tests + 12 Playwright e2e tests = 192 total (rewritten for Phase 4 SPA)
 - Coverage: models 100%, channels 100%, config 95%, parser 88%, processing 83%, session_store 86%, bundle 97%
 - CI runs `pytest --ignore=tests/e2e --cov-fail-under=50` before freeze
 
----
-
-## Uncommitted Changes (as of conversation end)
-
-The Phase 3 test suite has not yet been committed. Files:
-
-```
-Modified:
-  .github/workflows/build.yml   (added pytest step)
-  .gitignore                     (added .coverage, htmlcov/)
-  requirements.txt               (added pytest, pytest-cov, playwright)
-
-New:
-  pytest.ini
-  tests/conftest.py
-  tests/fixtures/sample_export.txt
-  tests/test_models.py
-  tests/test_config.py
-  tests/test_channels.py
-  tests/test_parser.py
-  tests/test_processing.py
-  tests/test_session_store.py
-  tests/test_sync_bundle.py
-  tests/test_api.py
-  tests/e2e/conftest.py
-  tests/e2e/test_smoke.py
-  environment/                   (this file and the roadmap)
-```
+### Phase 4: SPA Frontend Migration
+- React 18 + TypeScript + Vite SPA in `frontend/`
+- All 21 Jinja2 templates replaced; Flask is now a pure JSON API server
+- `test_api.py` rewritten (52 tests) to target JSON APIs instead of form-based HTML routes
+- `test_smoke.py` rewritten (12 tests) with React SPA selectors and client-side rendering waits
+- 5 bugs in `app.py` caught and fixed by tests (incorrect store method names)
+- Build verified: v1.6.0 released via CI
 
 ---
 
 ## Known Issues / Notes
 
-1. **Flask broken in base conda env** -- Flask import fails in the base Anaconda environment. Use `.buildenv/` venv for PyInstaller builds, or reinstall Flask with `pip install Flask --force-reinstall`.
-2. **Playwright browsers** -- Must run `python -m playwright install chromium` before e2e tests.
-3. **E2e tests excluded from CI** -- The GitHub Actions runner doesn't have Playwright browsers; only unit/integration tests run in CI.
-4. **Coverage gaps** -- `sync/cloud_google.py` (0%), `sync/secrets.py` (0%), `auth/oauth.py` (36%), and `tools/` modules (6-50%) have low coverage because they require external service mocking or specific session data. These are acceptable given the Phase 4 SPA migration will change the frontend contract.
+1. **Playwright browsers** -- Must run `python -m playwright install chromium` before e2e tests. E2E tests also require the SPA to be built first (`cd frontend && npm run build:spa`).
+2. **E2e tests excluded from CI** -- The GitHub Actions runner doesn't have Playwright browsers; only unit/integration tests run in CI.
+3. **Coverage gaps** -- `sync/cloud_google.py` (0%), `sync/secrets.py` (0%), `auth/oauth.py` (36%), and `tools/` modules (6-50%) have low coverage because they require external service mocking or specific session data.
+4. **MSYS2 Python on dev machine** -- The local dev machine uses MSYS2/MinGW Python which requires `--system-site-packages` venv and `pacman` for native packages like `cryptography`. Standard Windows Python recommended for new setups.
 
 ---
 
 ## Next Step
 
-**Phase 4: SPA Frontend Migration (React + TypeScript)** -- see `environment/evolution_roadmap.md` for details.
+**Phase 5: Rust Processing Modules (napi-rs)** -- see `environment/evolution_roadmap.md` for details.

@@ -15,5 +15,7 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, '../LapForge/static/spa'),
     emptyOutDir: true,
+    assetsDir: 'assets',
   },
+  base: '/static/spa/',
 });
