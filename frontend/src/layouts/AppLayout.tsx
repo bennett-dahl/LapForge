@@ -60,8 +60,8 @@ export default function AppLayout() {
   }
 
   return (
-    <div className={`app-root${collapsed ? ' sidebar-collapsed' : ''}`}>
-      <aside className="sidebar" id="sidebar">
+    <div className="app-root">
+      <aside className={`sidebar${collapsed ? ' collapsed' : ''}`} id="sidebar">
         <div className="sb-brand">
           <img className="sb-logo" src="/static/images/symbol.png" alt="LapForge" />
         </div>
@@ -76,18 +76,28 @@ export default function AppLayout() {
         </nav>
         <div className="sb-footer">
           {user?.user ? (
-            <div className="sb-user">
-              {user.user.picture ? (
-                <img className="sb-user-avatar" src={user.user.picture} alt="" referrerPolicy="no-referrer" />
-              ) : (
-                <svg className="sb-user-avatar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" />
+            <>
+              <div className="sb-user">
+                {user.user.picture ? (
+                  <img className="sb-user-avatar" src={user.user.picture} alt="" referrerPolicy="no-referrer" />
+                ) : (
+                  <svg className="sb-user-avatar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" />
+                  </svg>
+                )}
+                <span className="sb-label sb-user-name">{user.user.name || user.user.email}</span>
+              </div>
+              <a href="/auth/logout" className="sb-link sb-signout">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
                 </svg>
-              )}
-              <span className="sb-label sb-user-name">{user.user.name || user.user.email}</span>
-            </div>
+                <span className="sb-label">Sign out</span>
+              </a>
+            </>
           ) : user?.oauth_enabled ? (
-            <a href="/auth/login" className="sb-link sb-login-link">
+            <a href="/auth/login" className="sb-link sb-signin">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4" />
                 <polyline points="10 17 15 12 10 7" />
@@ -96,10 +106,11 @@ export default function AppLayout() {
               <span className="sb-label">Sign in</span>
             </a>
           ) : null}
-          <button className="sb-toggle" onClick={toggleSidebar} title="Toggle sidebar">
+          <button className="sb-collapse-btn" id="sb-toggle" onClick={toggleSidebar} title="Toggle sidebar">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
             </svg>
+            <span className="sb-label">Collapse</span>
           </button>
         </div>
       </aside>

@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { MapContainer, Polyline, CircleMarker, useMap } from 'react-leaflet';
+import {
+  MapContainer,
+  TileLayer,
+  LayersControl,
+  Polyline,
+  CircleMarker,
+  useMap,
+} from 'react-leaflet';
 import type { LatLngExpression } from 'leaflet';
+import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { useCursorSync } from '../../contexts/CursorSyncContext';
 
@@ -10,6 +18,25 @@ interface TrackMapProps {
   lapSplits?: number[];
   height?: number;
   onMapClick?: (distance: number) => void;
+}
+
+/** Chaikin corner-cutting smoothing on a 2D polyline (iterations of subdivision). */
+function chaikinSmooth(points: [number, number][], iterations = 2): [number, number][] {
+  if (points.length < 2) return points;
+  let cur = points;
+  for (let iter = 0; iter < iterations; iter++) {
+    const next: [number, number][] = [];
+    for (let i = 0; i < cur.length - 1; i++) {
+      const p0 = cur[i];
+      const p1 = cur[i + 1];
+      next.push(
+        [0.75 * p0[0] + 0.25 * p1[0], 0.75 * p0[1] + 0.25 * p1[1]],
+        [0.25 * p0[0] + 0.75 * p1[0], 0.25 * p0[1] + 0.75 * p1[1]],
+      );
+    }
+    cur = next;
+  }
+  return cur;
 }
 
 function interpolatePosition(
@@ -32,13 +59,148 @@ function interpolatePosition(
   return [last.lat, last.lng];
 }
 
+/** Initial bearing from (lat1,lng1) to (lat2,lng2) in degrees, 0 = north, clockwise. */
+function bearingDegrees(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const φ1 = (lat1 * Math.PI) / 180;
+  const φ2 = (lat2 * Math.PI) / 180;
+  const Δλ = ((lng2 - lng1) * Math.PI) / 180;
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x =
+    Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+function headingAtDistance(
+  points: TrackMapProps['points'],
+  targetDist: number,
+): number {
+  if (points.length < 2) return 0;
+  const firstD = points[0].distance ?? 0;
+  if (targetDist <= firstD) {
+    return bearingDegrees(
+      points[0].lat,
+      points[0].lng,
+      points[1].lat,
+      points[1].lng,
+    );
+  }
+  for (let i = 0; i < points.length - 1; i++) {
+    const d0 = points[i].distance ?? 0;
+    const d1 = points[i + 1].distance ?? 0;
+    if (targetDist >= d0 && targetDist <= d1) {
+      return bearingDegrees(
+        points[i].lat,
+        points[i].lng,
+        points[i + 1].lat,
+        points[i + 1].lng,
+      );
+    }
+  }
+  const n = points.length;
+  return bearingDegrees(
+    points[n - 2].lat,
+    points[n - 2].lng,
+    points[n - 1].lat,
+    points[n - 1].lng,
+  );
+}
+
+function LapSplitMarkers({
+  points,
+  lapSplits,
+}: {
+  points: TrackMapProps['points'];
+  lapSplits: number[];
+}) {
+  const markers = useMemo(() => {
+    const out: [number, number][] = [];
+    for (const d of lapSplits) {
+      const p = interpolatePosition(points, d);
+      if (p) out.push(p);
+    }
+    return out;
+  }, [points, lapSplits]);
+
+  return (
+    <>
+      {markers.map((center, i) => (
+        <CircleMarker
+          key={`split-${i}-${center[0]}-${center[1]}`}
+          center={center}
+          radius={4}
+          pathOptions={{
+            color: '#94a3b8',
+            fillColor: '#64748b',
+            fillOpacity: 0.9,
+            weight: 1,
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
 function CursorMarker({ points }: { points: TrackMapProps['points'] }) {
-  const { distance, setCursor } = useCursorSync();
+  const { distance, mapDistance, setCursor } = useCursorSync();
   const map = useMap();
-  const markerPos = useMemo(() => {
-    if (distance == null) return null;
-    return interpolatePosition(points, distance);
-  }, [distance, points]);
+  const markerRef = useRef<L.Marker | null>(null);
+  const iconRef = useRef<L.DivIcon | null>(null);
+
+  const rawDist = mapDistance ?? distance;
+
+  const trackLength = points.length > 1 ? (points[points.length - 1].distance ?? 0) : 0;
+
+  useEffect(() => {
+    if (rawDist == null) {
+      if (markerRef.current) {
+        markerRef.current.remove();
+        markerRef.current = null;
+      }
+      return;
+    }
+
+    // Wrap cumulative session distance into a single-lap track distance
+    const trackDist = trackLength > 0 ? rawDist % trackLength : rawDist;
+
+    const pos = interpolatePosition(points, trackDist);
+    if (!pos) {
+      if (markerRef.current) {
+        markerRef.current.remove();
+        markerRef.current = null;
+      }
+      return;
+    }
+
+    const heading = headingAtDistance(points, trackDist);
+
+    if (!markerRef.current) {
+      iconRef.current = L.divIcon({
+        className: 'cursor-track-marker',
+        html: `<div class="cursor-track-marker-inner" style="transform: rotate(${heading}deg)"></div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      });
+      markerRef.current = L.marker(pos, {
+        icon: iconRef.current,
+        zIndexOffset: 500,
+      }).addTo(map);
+    } else {
+      markerRef.current.setLatLng(pos);
+      const inner = markerRef.current.getElement()?.querySelector('.cursor-track-marker-inner') as HTMLElement | null;
+      if (inner) {
+        inner.style.transform = `rotate(${heading}deg)`;
+      }
+    }
+  }, [rawDist, trackLength, points, map]);
+
+  useEffect(() => {
+    return () => {
+      if (markerRef.current) {
+        markerRef.current.remove();
+        markerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     function handleClick(e: L.LeafletMouseEvent) {
@@ -57,11 +219,12 @@ function CursorMarker({ points }: { points: TrackMapProps['points'] }) {
       setCursor({ distance: bestDistAlong, mapDistance: bestDistAlong });
     }
     map.on('click', handleClick);
-    return () => { map.off('click', handleClick); };
+    return () => {
+      map.off('click', handleClick);
+    };
   }, [map, points, setCursor]);
 
-  if (!markerPos) return null;
-  return <CircleMarker center={markerPos} radius={5} pathOptions={{ color: '#facc15', fillColor: '#facc15', fillOpacity: 1, weight: 2 }} />;
+  return null;
 }
 
 function FitBounds({ points }: { points: LatLngExpression[] }) {
@@ -78,12 +241,18 @@ function FitBounds({ points }: { points: LatLngExpression[] }) {
 export default function TrackMap({
   points,
   sections = [],
-  height = 300,
+  lapSplits,
+  height,
 }: TrackMapProps) {
   const positions = useMemo<LatLngExpression[]>(
     () => points.map((p) => [p.lat, p.lng] as [number, number]),
     [points],
   );
+
+  const smoothedPositions = useMemo(() => {
+    const asTuples = points.map((p) => [p.lat, p.lng] as [number, number]);
+    return chaikinSmooth(asTuples, 2) as LatLngExpression[];
+  }, [points]);
 
   const sectionPolylines = useMemo(() => {
     return sections.map((sec, i) => {
@@ -97,25 +266,44 @@ export default function TrackMap({
   }, [sections, points]);
 
   if (positions.length < 2) {
-    return <div className="track-map-empty" style={{ height }}>No GPS data available</div>;
+    return <div className="track-map-empty" style={{ width: '100%', height: height ?? '100%' }}>No GPS data available</div>;
   }
 
   const center = positions[0] as [number, number];
 
   return (
-    <div className="track-map" style={{ height }}>
+    <div className="track-map" style={{ width: '100%', height: height ?? '100%' }}>
       <MapContainer
         center={center}
         zoom={15}
         style={{ width: '100%', height: '100%' }}
-        attributionControl={false}
         zoomControl={true}
       >
-        <FitBounds points={positions} />
-        <Polyline positions={positions} pathOptions={{ color: '#3b82f6', weight: 2, opacity: 0.7 }} />
+        <LayersControl position="topright">
+          <LayersControl.BaseLayer checked name="Street">
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            />
+          </LayersControl.BaseLayer>
+          <LayersControl.BaseLayer name="Satellite">
+            <TileLayer
+              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+              attribution='&copy; Esri'
+            />
+          </LayersControl.BaseLayer>
+        </LayersControl>
+        <FitBounds points={smoothedPositions} />
+        <Polyline
+          positions={smoothedPositions}
+          pathOptions={{ color: '#3b82f6', weight: 2, opacity: 0.7 }}
+        />
         {sectionPolylines.map((sp) => (
           <Polyline key={sp.key} positions={sp.positions} pathOptions={{ color: sp.color, weight: 4, opacity: 0.6 }} />
         ))}
+        {lapSplits != null && lapSplits.length > 0 && (
+          <LapSplitMarkers points={points} lapSplits={lapSplits} />
+        )}
         <CursorMarker points={points} />
       </MapContainer>
     </div>

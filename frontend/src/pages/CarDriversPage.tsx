@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client';
 import type { CarDriver } from '../types/models';
@@ -8,6 +8,10 @@ import Modal from '../components/ui/Modal';
 
 export default function CarDriversPage() {
   const qc = useQueryClient();
+
+  useEffect(() => {
+    document.title = 'LapForge - Car & Drivers';
+  }, []);
   const { data: carDrivers = [], isLoading } = useQuery({
     queryKey: ['car-drivers'],
     queryFn: () => apiGet<CarDriver[]>('/api/car-drivers'),
@@ -68,9 +72,9 @@ export default function CarDriversPage() {
       </div>
 
       {isLoading ? (
-        <p className="text-muted">Loading...</p>
+        <p className="muted">Loading...</p>
       ) : carDrivers.length === 0 ? (
-        <p className="text-muted">No car/driver entries yet.</p>
+        <p className="muted">No car/driver entries yet.</p>
       ) : (
         <table className="data-table">
           <thead>

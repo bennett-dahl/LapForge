@@ -97,6 +97,10 @@ export interface DashboardModule {
   width?: string;
   height?: number | null;
   channels?: string[];
+  /** Partition of `channels` into Y axis groups (axis ids: y, y2, y3, …). */
+  yAxisGroups?: string[][];
+  /** Per-axis scale options; keys match Chart.js scale ids (y, y2, …). */
+  yAxisConfig?: Record<string, { autoScale?: boolean; min?: number; max?: number }>;
   [key: string]: unknown;
 }
 

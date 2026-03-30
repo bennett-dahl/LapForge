@@ -1,14 +1,19 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, Link } from 'react-router-dom';
 import { apiGet, apiDelete } from '../api/client';
 import type { SessionsFullResponse } from '../types/api';
 import Button from '../components/ui/Button';
+import { tempLabel } from '../utils/units';
 
 export default function SessionsPage() {
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
   const filterCd = params.get('car_driver_id') ?? '';
+
+  useEffect(() => {
+    document.title = 'LapForge - Sessions';
+  }, []);
 
   const { data, isLoading } = useQuery({
     queryKey: ['sessions-full'],
@@ -58,7 +63,7 @@ export default function SessionsPage() {
               <option key={cd.id} value={cd.id}>{cd.car_identifier} / {cd.driver_name}</option>
             ))}
           </select>
-          {compareIds.size >= 2 && (
+          {compareIds.size >= 1 && (
             <Link to={`/compare?ids=${[...compareIds].join(',')}`}>
               <Button>Compare ({compareIds.size})</Button>
             </Link>
@@ -67,9 +72,9 @@ export default function SessionsPage() {
       </div>
 
       {isLoading ? (
-        <p className="text-muted">Loading...</p>
+        <p className="muted">Loading...</p>
       ) : filtered.length === 0 ? (
-        <p className="text-muted">No sessions yet. <Link to="/upload">Upload</Link> a Pi Toolbox export to get started.</p>
+        <p className="muted">No sessions yet. <Link to="/upload">Upload</Link> a Pi Toolbox export to get started.</p>
       ) : (
         <table className="data-table">
           <thead>
@@ -77,6 +82,8 @@ export default function SessionsPage() {
               <th className="col-check"></th>
               <th>Track</th>
               <th>Type</th>
+              <th>Car (session)</th>
+              <th>Driver (session)</th>
               <th>Car / Driver</th>
               <th>Laps</th>
               <th>Temps</th>
@@ -97,12 +104,14 @@ export default function SessionsPage() {
                   </td>
                   <td><Link to={`/sessions/${s.id}`}>{s.track}</Link></td>
                   <td>{s.session_type}</td>
+                  <td>{s.car?.trim() ? s.car : '—'}</td>
+                  <td>{s.driver?.trim() ? s.driver : '—'}</td>
                   <td>{cd ? `${cd.car_identifier} / ${cd.driver_name}` : '—'}</td>
                   <td>{s.lap_count}</td>
                   <td>
-                    {s.ambient_temp_c != null && `${s.ambient_temp_c}°C`}
+                    {s.ambient_temp_c != null && `${s.ambient_temp_c}${tempLabel('c')}`}
                     {s.ambient_temp_c != null && s.track_temp_c != null && ' / '}
-                    {s.track_temp_c != null && `${s.track_temp_c}°C`}
+                    {s.track_temp_c != null && `${s.track_temp_c}${tempLabel('c')}`}
                   </td>
                   <td className="actions">
                     <Link to={`/sessions/${s.id}`}><Button variant="ghost" size="sm">View</Button></Link>

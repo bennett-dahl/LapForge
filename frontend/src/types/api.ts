@@ -145,6 +145,26 @@ export interface SettingsResponse {
 }
 
 // Upload
+/** Suggested save-form values derived from the parser / OutingInformation. */
+export interface UploadFormMetadata {
+  session_type?: string;
+  track?: string;
+  driver?: string;
+  car?: string;
+  outing_number?: string | number;
+  session_number?: string | number;
+}
+
+/** Successful `/upload` parse response (before save). */
+export interface UploadParseResponse {
+  parsed: true;
+  metadata?: Record<string, string>;
+  upload_path: string;
+  form_metadata?: UploadFormMetadata;
+  row_count?: number;
+  lap_split_count?: number;
+}
+
 export interface UploadTaskStatus {
   pct: number;
   stage: string;

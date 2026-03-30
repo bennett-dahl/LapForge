@@ -292,23 +292,48 @@ def create_app() -> Flask:
             cat = cmeta.get("category", "other")
             cat_groups.setdefault(cat, []).append(cname)
 
-        lap_times_raw = summary_blob.get("lap_times") or sd.get("lap_split_times") or []
+        # Build per-lap times from split boundaries
+        lap_splits_for_times = lap_splits or sd.get("lap_split_times") or []
+        lap_times_raw = summary_blob.get("lap_times")
         fast_idx = None
         lap_times = []
-        for i, lt in enumerate(lap_times_raw):
-            t = lt if isinstance(lt, (int, float)) else lt.get("time", lt) if isinstance(lt, dict) else 0
-            lap_times.append({"lap": i + 1, "time": t})
-            if fast_idx is None or t < lap_times[fast_idx]["time"]:
-                fast_idx = i
+        if lap_times_raw:
+            for i, lt in enumerate(lap_times_raw):
+                t = lt if isinstance(lt, (int, float)) else lt.get("time", lt) if isinstance(lt, dict) else 0
+                lap_times.append({"lap": i + 1, "time": t})
+                if fast_idx is None or t < lap_times[fast_idx]["time"]:
+                    fast_idx = i
+        elif len(lap_splits_for_times) >= 2:
+            for i in range(len(lap_splits_for_times) - 1):
+                dt = lap_splits_for_times[i + 1] - lap_splits_for_times[i]
+                if dt > 0:
+                    lap_times.append({"lap": i + 1, "time": round(dt, 3)})
+                    if fast_idx is None or dt < lap_times[fast_idx]["time"]:
+                        fast_idx = len(lap_times) - 1
 
+        # Build GPS points from reference_lap (stored as parallel arrays, not point dicts)
         reference_lap = sd.get("reference_lap") or {}
-        ref_points = reference_lap.get("points") or []
         gps_points = []
-        for pt in ref_points:
-            if isinstance(pt, dict) and "lat" in pt and "lng" in pt:
-                gps_points.append({"lat": pt["lat"], "lng": pt["lng"], "distance": pt.get("distance", 0)})
-            elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                gps_points.append({"lat": pt[0], "lng": pt[1], "distance": pt[2] if len(pt) > 2 else 0})
+        ref_points = reference_lap.get("points") or []
+        if ref_points:
+            for pt in ref_points:
+                if isinstance(pt, dict) and "lat" in pt and "lng" in pt:
+                    gps_points.append({"lat": pt["lat"], "lng": pt["lng"], "distance": pt.get("distance", 0)})
+                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                    gps_points.append({"lat": pt[0], "lng": pt[1], "distance": pt[2] if len(pt) > 2 else 0})
+        else:
+            ref_lat = reference_lap.get("lat") or []
+            ref_lon = reference_lap.get("lon") or []
+            ref_dist = reference_lap.get("distance") or []
+            for i in range(min(len(ref_lat), len(ref_lon))):
+                lat_v = ref_lat[i]
+                lon_v = ref_lon[i]
+                if lat_v is not None and lon_v is not None:
+                    gps_points.append({
+                        "lat": lat_v,
+                        "lng": lon_v,
+                        "distance": ref_dist[i] if i < len(ref_dist) else 0,
+                    })
 
         sections = []
         track_sections = st.list_track_sections(session.track) if session.track else []
@@ -667,6 +692,18 @@ def create_app() -> Flask:
 
     # ---- Upload ----
 
+    def _upload_form_metadata(outing_meta: dict[str, str]) -> dict[str, str]:
+        """Map Pi {OutingInformation} keys to save-form field names."""
+        m = outing_meta or {}
+        return {
+            "session_type": m.get("SessionType") or m.get("Session") or "",
+            "track": m.get("TrackName") or m.get("Track") or "",
+            "driver": m.get("DriverName") or m.get("Driver") or "",
+            "car": m.get("CarName") or m.get("Car") or "",
+            "outing_number": m.get("OutingNumber") or "",
+            "session_number": m.get("SessionNumber") or "",
+        }
+
     @app.route("/upload", methods=["GET", "POST"])
     def upload():
         if request.method == "GET":
@@ -775,10 +812,15 @@ def create_app() -> Flask:
         except Exception as e:
             return jsonify({"error": str(e)}), 400
         meta = parsed.get("metadata") or {}
+        rows = parsed.get("rows") or []
+        lap_splits = parsed.get("lap_split_times") or []
         return jsonify({
             "parsed": True,
             "metadata": meta,
             "upload_path": str(path),
+            "form_metadata": _upload_form_metadata(meta if isinstance(meta, dict) else {}),
+            "row_count": len(rows),
+            "lap_split_count": len(lap_splits),
         })
 
     # ---- Background task status API ----
@@ -1479,6 +1521,58 @@ def create_app() -> Flask:
             return jsonify({"error": "Not found"}), 404
         store.delete_session(sid)
         return jsonify({"ok": True})
+
+    @app.route("/api/sessions/<sid>/reprocess", methods=["POST"])
+    def api_session_reprocess(sid: str):
+        """Re-run processing from the original export file; stream SSE progress."""
+        session = store.get_session(sid)
+        if not session:
+            return jsonify({"error": "Not found"}), 404
+        fp = _resolve_fp(session)
+        if not fp or not fp.exists():
+            return jsonify({"error": "Source file not found"}), 400
+
+        def generate():
+            try:
+                existing = session.parsed_data if isinstance(session.parsed_data, dict) else None
+                _stale = stale_stages(existing) if existing else []
+                can_incremental = existing and "core" not in _stale and len(_stale) > 0
+                yield f"data: {json.dumps({'event': 'progress', 'pct': 0, 'stage': 'Loading export'})}\n\n"
+                parsed = load_pi_toolbox_export(str(fp))
+                yield f"data: {json.dumps({'event': 'progress', 'pct': 5, 'stage': 'Parsing'})}\n\n"
+
+                processed = None
+                if can_incremental:
+                    gen = process_session_incremental(
+                        parsed,
+                        existing,
+                        target_psi=_session_target_psi(session),
+                    )
+                else:
+                    gen = process_session_streaming(
+                        parsed,
+                        target_psi=_session_target_psi(session),
+                    )
+                for pct, stage_label, data in gen:
+                    yield f"data: {json.dumps({'event': 'progress', 'pct': pct, 'stage': stage_label or 'Processing'})}\n\n"
+                    if data is not None:
+                        processed = data
+
+                if processed is None:
+                    yield f"data: {json.dumps({'event': 'error', 'message': 'Processing failed'})}\n\n"
+                    return
+                session.parsed_data = sanitize_for_json(processed)
+                store.update_session(session)
+                yield f"data: {json.dumps({'event': 'complete', 'pct': 100})}\n\n"
+            except Exception as e:
+                log.exception("Session reprocess failed")
+                yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.route("/api/track-layouts")
     def api_track_layouts_list():

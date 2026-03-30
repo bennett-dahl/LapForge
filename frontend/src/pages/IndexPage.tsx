@@ -1,9 +1,14 @@
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { apiGet } from '../api/client';
 import type { CarDriver } from '../types/models';
 
 export default function IndexPage() {
+  useEffect(() => {
+    document.title = 'LapForge - Home';
+  }, []);
+
   const { data: carDrivers = [] } = useQuery({
     queryKey: ['car-drivers'],
     queryFn: () => apiGet<CarDriver[]>('/api/car-drivers'),
@@ -12,7 +17,7 @@ export default function IndexPage() {
   return (
     <div className="page-content">
       <h1>LapForge</h1>
-      <p className="text-muted">Telemetry analysis for motorsport data.</p>
+      <p className="muted">Telemetry analysis for motorsport data.</p>
 
       {carDrivers.length > 0 && (
         <section className="home-section">

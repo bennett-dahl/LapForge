@@ -1,8 +1,8 @@
 # LapForge Conversation Context
 
 > Last updated: 2026-03-30
-> Current app version: v1.6.0
-> Phase 4 SPA migration complete, tests rewritten, build verified
+> Current app version: v1.6.3
+> Phase 4 SPA migration complete, post-migration bugfix pass in progress
 
 ---
 
@@ -49,7 +49,7 @@ frontend/                  # React + TypeScript SPA (Vite)
                            # ComparePage, CompareDashboardPage
     components/
       ui/                  # Button, Modal
-      charts/              # TelemetryChart (react-chartjs-2), TirePressureChart
+      charts/              # TelemetryChart (imperative Chart.js), TirePressureChart
       maps/                # TrackMap (react-leaflet)
       tools/               # ChannelChart, TrackMapTool, SectionEditor, SectionMetrics, TirePressureTool
       dashboard/           # Dashboard, DashboardTemplateModal, modules/*
@@ -156,6 +156,28 @@ brand/                     # Original brand assets (PDF, PNGs)
 - 5 bugs in `app.py` caught and fixed by tests (incorrect store method names)
 - Build verified: v1.6.0 released via CI
 
+### Phase 4b: Post-SPA Bugfix Pass (in progress)
+A comprehensive regression bugfix plan (26 items across 3 tiers) was created and executed after the SPA migration. Major fixes include:
+
+**Critical stability fixes:**
+- Replaced `react-chartjs-2` `<Line>` with imperative Chart.js instance management in `TelemetryChart.tsx` to eliminate infinite re-render loops (React error #185) triggered by zoom and hover interactions
+- Introduced `useCursorStore()` (non-reactive) and `useCursorZoom()` (zoom-only reactive) hooks in `CursorSyncContext.tsx` to control re-render cascading — `Dashboard.tsx` no longer re-renders on cursor position changes
+- Fixed programmatic zoom via `chart.zoomScale('x', ..., 'none')` with `isSyncingRef` guard to prevent zoom↔state feedback loops
+- Imperative Leaflet marker updates in `TrackMap.tsx` (replaced react-leaflet `<Marker>`) with modulo-based lap distance wrapping for multi-lap cursor tracking
+
+**Data & backend fixes:**
+- Fixed `_build_dashboard_data` in `app.py` to compute lap durations from `lap_splits` array and reconstruct GPS `points` from parallel `lat`/`lon`/`distance` arrays (v2 processed data format)
+- Fixed OAuth login crash (`'OAuth' object has no attribute 'google'`) with safe `_google_client()` helper
+
+**Layout & UX:**
+- Session detail page: sidebar navigation replaced with horizontal tab bar
+- Dashboard modules: fixed-height flex layout with `overflow-y: auto` for scrollable content (lap times), drag-resize preserved
+- Charts and maps fill their container (`height: 100%`) instead of hardcoded pixel values
+- Memoized unstable references in `ChartModule.tsx` (`keys`, `sectionOverlays`) to prevent unnecessary data recomputation
+- Restored: sidebar collapse/sign-out, cloud sync tracked files list, pull-from-cloud override warning, data location change button, readout styling, session metadata sections, Y-axis config, channel picker
+
+**Remaining known issues:** Additional UI polish and minor regressions still being identified through user testing. Not all functionality has been fully verified post-migration.
+
 ---
 
 ## Known Issues / Notes
@@ -164,9 +186,11 @@ brand/                     # Original brand assets (PDF, PNGs)
 2. **E2e tests excluded from CI** -- The GitHub Actions runner doesn't have Playwright browsers; only unit/integration tests run in CI.
 3. **Coverage gaps** -- `sync/cloud_google.py` (0%), `sync/secrets.py` (0%), `auth/oauth.py` (36%), and `tools/` modules (6-50%) have low coverage because they require external service mocking or specific session data.
 4. **MSYS2 Python on dev machine** -- The local dev machine uses MSYS2/MinGW Python which requires `--system-site-packages` venv and `pacman` for native packages like `cryptography`. Standard Windows Python recommended for new setups.
+5. **Chart.js managed imperatively** -- `TelemetryChart.tsx` creates/destroys Chart.js instances directly (no `react-chartjs-2`). Cursor position updates use `chart.draw()` (canvas repaint only); zoom and data changes use `chart.update('none')`. All mutable references (`onHoverRef`, `syncRangeRef`, `crosshairPlugin`, `cursorXRef`) stored in `useRef` to avoid re-render triggers.
+6. **CursorSyncContext subscription tiers** -- Three access levels: `useCursorSync()` (fully reactive, for leaf components needing all cursor state), `useCursorZoom()` (reactive to zoom only, for Dashboard), `useCursorStore()` (non-reactive, for imperative subscriptions in TelemetryChart and TrackMap).
 
 ---
 
 ## Next Step
 
-**Phase 5: Rust Processing Modules (napi-rs)** -- see `environment/evolution_roadmap.md` for details.
+Complete remaining bugfix verification, then proceed to **Phase 5: Rust Processing Modules (napi-rs)** -- see `environment/evolution_roadmap.md` for details.

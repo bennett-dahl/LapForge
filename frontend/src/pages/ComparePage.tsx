@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { apiGet, apiPost, apiDelete } from '../api/client';
@@ -11,6 +11,10 @@ export default function ComparePage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const preselectedIds = params.get('ids')?.split(',').filter(Boolean) ?? [];
+
+  useEffect(() => {
+    document.title = 'LapForge - Compare';
+  }, []);
 
   const { data: comparisons = [] } = useQuery({
     queryKey: ['comparisons'],
@@ -34,6 +38,18 @@ export default function ComparePage() {
     },
   });
 
+  const emptyComparisonMut = useMutation({
+    mutationFn: () =>
+      apiPost<ComparisonCreateResponse>('/api/comparisons', {
+        name: 'New Comparison',
+        session_ids: [],
+      }),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['comparisons'] });
+      navigate(`/compare/${res.id}`);
+    },
+  });
+
   const deleteMut = useMutation({
     mutationFn: (id: string) => apiDelete(`/api/comparisons/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['comparisons'] }),
@@ -49,13 +65,23 @@ export default function ComparePage() {
 
   function handleCreate() {
     const ids = [...selectedIds];
-    if (ids.length < 2) return;
     createMut.mutate({ name: name.trim() || 'New Comparison', session_ids: ids });
   }
 
   return (
     <div className="page-content">
-      <h1>Compare</h1>
+      <div className="page-header">
+        <h1>Compare</h1>
+        <div className="page-header-actions">
+          <Button
+            variant="secondary"
+            onClick={() => emptyComparisonMut.mutate()}
+            disabled={emptyComparisonMut.isPending}
+          >
+            New Comparison
+          </Button>
+        </div>
+      </div>
 
       {comparisons.length > 0 && (
         <section className="compare-saved">
@@ -78,9 +104,9 @@ export default function ComparePage() {
 
       <section className="compare-create card">
         <h2>Create New Comparison</h2>
-        <p className="text-muted">Select 2 or more sessions to compare.</p>
+        <p className="muted">Select one or more sessions to compare.</p>
 
-        <div className="compare-session-picker">
+        <div className="compare-session-picker compare-session-picker-scroll">
           {sessions.map((s) => (
             <label key={s.id} className="compare-session-item">
               <input
@@ -100,7 +126,7 @@ export default function ComparePage() {
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
-          <Button onClick={handleCreate} disabled={selectedIds.size < 2}>
+          <Button onClick={handleCreate} disabled={createMut.isPending}>
             Compare ({selectedIds.size})
           </Button>
         </div>
