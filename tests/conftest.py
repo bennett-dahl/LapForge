@@ -90,6 +90,13 @@ def flask_app(tmp_data_root: Path, tmp_path: Path, monkeypatch):
     from LapForge.app import create_app
     app = create_app()
     app.config["TESTING"] = True
+
+    spa_dir = Path(app.static_folder) / "spa"
+    spa_dir.mkdir(parents=True, exist_ok=True)
+    spa_index = spa_dir / "index.html"
+    if not spa_index.exists():
+        spa_index.write_text("<html><body>SPA</body></html>", encoding="utf-8")
+
     return app
 
 

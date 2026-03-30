@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 BACKEND_DIST = DIST / "backend"
 ELECTRON_DIR = ROOT / "electron"
+FRONTEND_DIR = ROOT / "frontend"
 SPEC_FILE = ROOT / "LapForge.spec"
 
 
@@ -42,7 +43,21 @@ def _build_python() -> str:
     return str(venv_python)
 
 
+def build_spa() -> None:
+    """Build the React SPA so Flask can serve it from static/spa/."""
+    node_modules = FRONTEND_DIR / "node_modules"
+    if not node_modules.exists():
+        run(["npm", "ci"], cwd=FRONTEND_DIR, label="Installing frontend dependencies")
+    run(["npm", "run", "build:spa"], cwd=FRONTEND_DIR, label="Building React SPA")
+    spa_out = ROOT / "LapForge" / "static" / "spa"
+    if not (spa_out / "index.html").exists():
+        print(f"ERROR: SPA build output not found at {spa_out}")
+        sys.exit(1)
+    print(f"  SPA built -> {spa_out}")
+
+
 def build_backend() -> None:
+    build_spa()
     py = _build_python()
     run(
         [py, "-m", "PyInstaller", "--clean", "--noconfirm", str(SPEC_FILE)],

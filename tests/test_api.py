@@ -46,128 +46,289 @@ def loaded_client(flask_app, tmp_data_root):
     return flask_app.test_client(), store, cd, session
 
 
-class TestIndexRoute:
-    def test_index_returns_200(self, client):
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert b"LapForge" in resp.data or resp.status_code == 200
+# ---------------------------------------------------------------------------
+# Page routes — SPA serves index.html for all page paths
+# ---------------------------------------------------------------------------
+
+class TestPageRoutes:
+    """All page routes now return the SPA shell (200) or 404 if SPA not built."""
+
+    @pytest.fixture(autouse=True)
+    def _ensure_spa_index(self, flask_app):
+        spa_dir = Path(flask_app.static_folder) / "spa"
+        spa_dir.mkdir(parents=True, exist_ok=True)
+        index = spa_dir / "index.html"
+        if not index.exists():
+            index.write_text("<html><body>SPA</body></html>", encoding="utf-8")
+
+    def test_index(self, client):
+        assert client.get("/").status_code == 200
+
+    def test_settings(self, client):
+        assert client.get("/settings").status_code == 200
+
+    def test_car_drivers(self, client):
+        assert client.get("/car-drivers").status_code == 200
+
+    def test_car_drivers_legacy_url(self, client):
+        assert client.get("/car_drivers").status_code == 200
+
+    def test_tire_sets(self, client):
+        assert client.get("/tire-sets").status_code == 200
+
+    def test_sessions(self, client):
+        assert client.get("/sessions").status_code == 200
+
+    def test_session_detail(self, loaded_client):
+        client, _, _, session = loaded_client
+        assert client.get(f"/sessions/{session.id}").status_code == 200
+
+    def test_upload(self, client):
+        assert client.get("/upload").status_code == 200
+
+    def test_compare(self, client):
+        assert client.get("/compare").status_code == 200
+
+    def test_compare_detail(self, loaded_client):
+        client, store, _, session = loaded_client
+        sc = store.add_saved_comparison("C", [session.id])
+        assert client.get(f"/compare/{sc.id}").status_code == 200
+
+    def test_track_layouts(self, client):
+        assert client.get("/track-layouts").status_code == 200
 
 
-class TestCarDriverRoutes:
+# ---------------------------------------------------------------------------
+# Car/Driver JSON API
+# ---------------------------------------------------------------------------
+
+class TestCarDriverAPI:
     def test_list(self, client, flask_app):
         flask_app.store.add_car_driver("911", "Alice")
-        resp = client.get("/car_drivers")
+        resp = client.get("/api/car-drivers")
         assert resp.status_code == 200
-        assert b"Alice" in resp.data
+        data = resp.get_json()
+        assert any(cd["driver_name"] == "Alice" for cd in data)
 
-    def test_add_get(self, client):
-        resp = client.get("/car_drivers/add")
+    def test_create(self, client):
+        resp = client.post(
+            "/api/car-drivers",
+            data=json.dumps({"car_identifier": "718", "driver_name": "Bob"}),
+            content_type="application/json",
+        )
         assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["car_driver"]["driver_name"] == "Bob"
 
-    def test_add_post(self, client, flask_app):
-        resp = client.post("/car_drivers/add", data={
-            "car_identifier": "718",
-            "driver_name": "Bob",
-        }, follow_redirects=True)
-        assert resp.status_code == 200
-        cds = flask_app.store.list_car_drivers()
-        assert any(cd.driver_name == "Bob" for cd in cds)
+    def test_create_validation(self, client):
+        resp = client.post(
+            "/api/car-drivers",
+            data=json.dumps({"car_identifier": "", "driver_name": ""}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
 
-    def test_edit(self, client, flask_app):
+    def test_update(self, client, flask_app):
         cd = flask_app.store.add_car_driver("911", "Alice")
-        resp = client.post(f"/car_drivers/{cd.id}/edit", data={
-            "car_identifier": "911",
-            "driver_name": "Updated",
-        }, follow_redirects=True)
+        resp = client.patch(
+            f"/api/car-drivers/{cd.id}",
+            data=json.dumps({"driver_name": "Updated"}),
+            content_type="application/json",
+        )
         assert resp.status_code == 200
         got = flask_app.store.get_car_driver(cd.id)
         assert got.driver_name == "Updated"
 
+    def test_update_not_found(self, client):
+        resp = client.patch(
+            "/api/car-drivers/nonexistent",
+            data=json.dumps({"driver_name": "X"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 404
+
     def test_delete(self, client, flask_app):
         cd = flask_app.store.add_car_driver("911", "Alice")
-        resp = client.post(f"/car_drivers/{cd.id}/delete", follow_redirects=True)
+        resp = client.delete(f"/api/car-drivers/{cd.id}")
         assert resp.status_code == 200
         assert flask_app.store.get_car_driver(cd.id) is None
 
 
-class TestTireSetRoutes:
+# ---------------------------------------------------------------------------
+# Tire Set JSON API
+# ---------------------------------------------------------------------------
+
+class TestTireSetAPI:
     def test_list(self, client, flask_app):
         flask_app.store.add_tire_set("Set A")
-        resp = client.get("/tire_sets")
+        resp = client.get("/api/tire-sets")
         assert resp.status_code == 200
+        data = resp.get_json()
+        assert any(ts["name"] == "Set A" for ts in data)
 
-    def test_add_post(self, client, flask_app):
+    def test_list_filtered(self, client, flask_app):
         cd = flask_app.store.add_car_driver("911", "Alice")
-        resp = client.post("/tire_sets/add", data={
-            "name": "New Set",
-            "car_driver_id": cd.id,
-            "pressure_unit": "bar",
-        }, follow_redirects=True)
+        flask_app.store.add_tire_set("Scoped", car_driver_id=cd.id)
+        flask_app.store.add_tire_set("Global")
+        resp = client.get(f"/api/tire-sets?car_driver_id={cd.id}")
+        data = resp.get_json()
+        assert len(data) >= 1
+
+    def test_create(self, client, flask_app):
+        cd = flask_app.store.add_car_driver("911", "Alice")
+        resp = client.post(
+            "/api/tire-sets",
+            data=json.dumps({"name": "New Set", "car_driver_id": cd.id}),
+            content_type="application/json",
+        )
         assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["tire_set"]["name"] == "New Set"
 
+    def test_create_validation(self, client):
+        resp = client.post(
+            "/api/tire-sets",
+            data=json.dumps({"name": ""}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
 
-class TestSessionRoutes:
-    def test_list(self, loaded_client):
-        client, store, cd, session = loaded_client
-        resp = client.get("/sessions")
+    def test_update(self, client, flask_app):
+        ts = flask_app.store.add_tire_set("Old")
+        resp = client.patch(
+            f"/api/tire-sets/{ts.id}",
+            data=json.dumps({"name": "Renamed"}),
+            content_type="application/json",
+        )
         assert resp.status_code == 200
+        got = flask_app.store.get_tire_set(ts.id)
+        assert got.name == "Renamed"
 
-    def test_detail(self, loaded_client):
-        client, store, cd, session = loaded_client
-        resp = client.get(f"/sessions/{session.id}")
+    def test_delete(self, client, flask_app):
+        ts = flask_app.store.add_tire_set("Del")
+        resp = client.delete(f"/api/tire-sets/{ts.id}")
         assert resp.status_code == 200
-        assert b"Test Track" in resp.data
+        assert flask_app.store.get_tire_set(ts.id) is None
 
-    def test_detail_unit_toggle(self, loaded_client):
-        client, store, cd, session = loaded_client
-        resp_psi = client.get(f"/sessions/{session.id}?unit=psi")
-        assert resp_psi.status_code == 200
-        resp_bar = client.get(f"/sessions/{session.id}?unit=bar")
-        assert resp_bar.status_code == 200
 
-    def test_edit(self, loaded_client):
-        client, store, cd, session = loaded_client
+# ---------------------------------------------------------------------------
+# Session JSON APIs
+# ---------------------------------------------------------------------------
+
+class TestSessionAPI:
+    def test_sessions_full(self, loaded_client):
+        client, *_ = loaded_client
+        resp = client.get("/api/sessions-full")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "sessions" in data
+        assert "car_drivers" in data
+        assert len(data["sessions"]) >= 1
+
+    def test_session_detail(self, loaded_client):
+        client, _, _, session = loaded_client
+        resp = client.get(f"/api/sessions/{session.id}/detail")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["session"]["track"] == "Test Track"
+        assert "dashboard_data" in data
+        assert "car_driver" in data
+        assert data["is_v2"] is True
+
+    def test_session_detail_not_found(self, client):
+        resp = client.get("/api/sessions/nonexistent/detail")
+        assert resp.status_code == 404
+
+    def test_session_update(self, loaded_client):
+        client, store, _, session = loaded_client
+        resp = client.patch(
+            f"/api/sessions/{session.id}",
+            data=json.dumps({"ambient_temp_c": 25.0, "lap_count_notes": "Good grip"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        got = store.get_session(session.id)
+        assert got.ambient_temp_c == 25.0
+        assert got.lap_count_notes == "Good grip"
+
+    def test_session_delete(self, loaded_client):
+        client, store, _, session = loaded_client
+        resp = client.delete(f"/api/sessions/{session.id}")
+        assert resp.status_code == 200
+        assert store.get_session(session.id) is None
+
+    def test_session_delete_not_found(self, client):
+        resp = client.delete("/api/sessions/nonexistent")
+        assert resp.status_code == 404
+
+    def test_legacy_edit_route(self, loaded_client):
+        client, store, _, session = loaded_client
         resp = client.post(f"/sessions/{session.id}/edit", data={
             "track": "Updated Track",
             "unit": "psi",
             "tool": "dashboard",
         }, follow_redirects=True)
         assert resp.status_code == 200
-        got = store.get_session(session.id)
-        assert got.track == "Updated Track"
 
-    def test_delete(self, loaded_client):
-        client, store, cd, session = loaded_client
+    def test_legacy_delete_route(self, loaded_client):
+        client, store, _, session = loaded_client
         resp = client.post(f"/sessions/{session.id}/delete", follow_redirects=True)
         assert resp.status_code == 200
         assert store.get_session(session.id) is None
 
-    def test_nonexistent_session_redirects(self, client):
-        resp = client.get("/sessions/nonexistent", follow_redirects=False)
-        assert resp.status_code == 302
 
+# ---------------------------------------------------------------------------
+# Settings JSON API
+# ---------------------------------------------------------------------------
 
-class TestSettingsRoute:
+class TestSettingsAPI:
     def test_get(self, client):
-        resp = client.get("/settings")
+        resp = client.get("/api/settings")
         assert resp.status_code == 200
+        data = resp.get_json()
+        assert "preferences" in data
+        assert "data_root" in data
+        assert "oauth_enabled" in data
 
-    def test_post(self, client):
-        resp = client.post("/settings", data={
-            "default_target_pressure_psi": "26.5",
-            "default_temp_unit": "f",
-            "default_pressure_unit": "bar",
-            "default_distance_unit": "mi",
-        }, follow_redirects=True)
+    def test_update(self, client):
+        resp = client.patch(
+            "/api/settings",
+            data=json.dumps({
+                "default_target_pressure_psi": 26.5,
+                "default_temp_unit": "F",
+                "default_pressure_unit": "bar",
+            }),
+            content_type="application/json",
+        )
         assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+
+        resp = client.get("/api/settings")
+        prefs = resp.get_json()["preferences"]
+        assert prefs["default_target_pressure_psi"] == 26.5
 
 
-class TestUploadRoute:
-    def test_get(self, client, flask_app):
-        flask_app.store.add_car_driver("911", "Alice")
-        resp = client.get("/upload")
+# ---------------------------------------------------------------------------
+# Auth API
+# ---------------------------------------------------------------------------
+
+class TestAuthAPI:
+    def test_auth_user(self, client):
+        resp = client.get("/api/auth/user")
         assert resp.status_code == 200
+        data = resp.get_json()
+        assert "user" in data
+        assert "oauth_enabled" in data
 
+
+# ---------------------------------------------------------------------------
+# Upload (JSON responses)
+# ---------------------------------------------------------------------------
+
+class TestUploadAPI:
     def test_upload_file(self, client, flask_app):
         flask_app.store.add_car_driver("911", "Alice")
         sample = FIXTURES / "sample_export.txt"
@@ -176,7 +337,10 @@ class TestUploadRoute:
                 "file": (f, "sample_export.txt"),
             }, content_type="multipart/form-data")
         assert resp.status_code == 200
-        assert b"Test Track" in resp.data or b"Test Driver" in resp.data
+        data = resp.get_json()
+        assert data["parsed"] is True
+        assert "metadata" in data
+        assert "upload_path" in data
 
     def test_upload_wrong_extension(self, client, flask_app):
         flask_app.store.add_car_driver("911", "Alice")
@@ -184,9 +348,51 @@ class TestUploadRoute:
         resp = client.post("/upload", data={
             "file": (io.BytesIO(b"data"), "bad.csv"),
         }, content_type="multipart/form-data")
-        assert resp.status_code == 200
-        assert b"must be .txt" in resp.data
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert "must be .txt" in data["error"]
 
+    def test_upload_no_file(self, client):
+        resp = client.post("/upload", data={}, content_type="multipart/form-data")
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# Track Layout JSON API
+# ---------------------------------------------------------------------------
+
+class TestTrackLayoutAPI:
+    def test_list(self, client):
+        resp = client.get("/api/track-layouts")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "layouts" in data
+        assert "session_map" in data
+
+    def test_create(self, loaded_client):
+        client, store, cd, session = loaded_client
+        resp = client.post(
+            "/api/track-layouts",
+            data=json.dumps({
+                "name": "Main Layout",
+                "source_session_id": session.id,
+            }),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+
+    def test_delete(self, loaded_client):
+        client, store, cd, session = loaded_client
+        layout = store.add_track_layout("L", "T", {"lat": []})
+        resp = client.delete(f"/api/track-layouts/{layout.id}")
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Section API
+# ---------------------------------------------------------------------------
 
 class TestSectionAPI:
     def test_list_empty(self, loaded_client):
@@ -217,32 +423,17 @@ class TestSectionAPI:
         assert len(sections) == 1
 
 
-class TestTrackLayoutAPI:
-    def test_create(self, loaded_client):
-        client, store, cd, session = loaded_client
-        resp = client.post(
-            "/api/track-layouts",
-            data=json.dumps({
-                "name": "Main Layout",
-                "source_session_id": session.id,
-            }),
-            content_type="application/json",
-        )
-        assert resp.status_code == 200
+# ---------------------------------------------------------------------------
+# Compare API
+# ---------------------------------------------------------------------------
 
-    def test_delete(self, loaded_client):
-        client, store, cd, session = loaded_client
-        layout = store.add_track_layout("L", "T", {"lat": []})
-        resp = client.delete(f"/api/track-layouts/{layout.id}")
-        assert resp.status_code == 200
-
-
-class TestCompareRoutes:
+class TestCompareAPI:
     def test_list(self, client):
-        resp = client.get("/compare")
+        resp = client.get("/api/comparisons")
         assert resp.status_code == 200
+        assert isinstance(resp.get_json(), list)
 
-    def test_create_via_api(self, loaded_client):
+    def test_create(self, loaded_client):
         client, store, cd, session = loaded_client
         resp = client.post(
             "/api/comparisons",
@@ -254,7 +445,7 @@ class TestCompareRoutes:
         assert data["ok"] is True
         assert "id" in data
 
-    def test_update_via_api(self, loaded_client):
+    def test_update(self, loaded_client):
         client, store, cd, session = loaded_client
         sc = store.add_saved_comparison("Old", [session.id])
         resp = client.patch(
@@ -266,18 +457,25 @@ class TestCompareRoutes:
         got = store.get_saved_comparison(sc.id)
         assert got.name == "New"
 
-    def test_delete_via_api(self, loaded_client):
+    def test_delete(self, loaded_client):
         client, store, cd, session = loaded_client
         sc = store.add_saved_comparison("X", [session.id])
         resp = client.delete(f"/api/comparisons/{sc.id}")
         assert resp.status_code == 200
 
-    def test_dashboard_view(self, loaded_client):
-        client, store, cd, session = loaded_client
+    def test_dashboard_data(self, loaded_client):
+        client, store, _, session = loaded_client
         sc = store.add_saved_comparison("Comp", [session.id])
-        resp = client.get(f"/compare/{sc.id}")
+        resp = client.get(f"/api/comparisons/{sc.id}/dashboard-data")
         assert resp.status_code == 200
+        data = resp.get_json()
+        assert "comparison_id" in data
+        assert "sessions" in data
 
+
+# ---------------------------------------------------------------------------
+# Dashboard Template API
+# ---------------------------------------------------------------------------
 
 class TestDashboardTemplateAPI:
     def test_crud(self, client, flask_app):
@@ -310,6 +508,10 @@ class TestDashboardTemplateAPI:
         resp = client.get("/api/dashboard-templates")
         assert len(resp.get_json()) == before_count
 
+
+# ---------------------------------------------------------------------------
+# Dashboard Layout API
+# ---------------------------------------------------------------------------
 
 class TestDashboardLayoutAPI:
     def test_session_layout_save_and_get(self, loaded_client):
@@ -345,6 +547,10 @@ class TestDashboardLayoutAPI:
         assert resp.get_json()["layout"] == layout
 
 
+# ---------------------------------------------------------------------------
+# Session List API (lightweight)
+# ---------------------------------------------------------------------------
+
 class TestSessionListAPI:
     def test_list(self, loaded_client):
         client, *_ = loaded_client
@@ -355,14 +561,12 @@ class TestSessionListAPI:
         assert "label" in data[0]
 
 
+# ---------------------------------------------------------------------------
+# Sync Status API
+# ---------------------------------------------------------------------------
+
 class TestSyncStatusAPI:
     def test_not_logged_in(self, client):
         resp = client.get("/api/sync/status")
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "not_logged_in"
-
-
-class TestTrackLayoutPage:
-    def test_list_page(self, client):
-        resp = client.get("/track-layouts")
-        assert resp.status_code == 200

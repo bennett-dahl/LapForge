@@ -8,8 +8,9 @@
 - **Phase 2: COMPLETE** -- electron-updater, GitHub Actions CI on `v*` tags, GitHub Releases with `releaseType: release`, auto-update notification bar (gold, fixed bottom), Help > About dialog, native menu bar (File/Edit/View/Help)
 - **Phase 2b: COMPLETE** -- Brand identity applied (icons, splash, sidebar symbol, favicon, gold accent palette), OAuth credentials extracted from source into CI-injected `_build_defaults.json`
 - **Phase 3: COMPLETE** -- 186 tests (174 unit/integration + 12 Playwright e2e), pytest + pytest-cov, CI pytest step with `--cov-fail-under=50`
-- **Current version: v1.5.0** -- published, auto-update pipeline verified end-to-end
-- **Codebase:** 23 Python files (~6,700 lines), 48 routes in `app.py` (1,694 lines), 5 tool plugins, 21 Jinja2 templates, vanilla JS, SQLite, Google Drive sync, OAuth
+- **Phase 4: COMPLETE** -- SPA Frontend Migration: React + TypeScript + Vite replacing all 21 Jinja2 templates; Flask is now a pure JSON API server
+- **Current version: v1.5.3** -- published, auto-update pipeline verified end-to-end
+- **Codebase:** 23 Python files (~6,700 lines), Flask routes now API-only, React SPA (frontend/ — ~30 TSX components), SQLite, Google Drive sync, OAuth
 - **Test suite:** 186 tests, 53% overall coverage; core modules: models 100%, channels 100%, config 95%, parser 88%, processing 83%, session_store 86%, bundle 97%
 
 ---
@@ -45,25 +46,31 @@
 
 ---
 
-## Phase 4: SPA Frontend Migration (React + TypeScript) -- NEXT UP
+## Phase 4: SPA Frontend Migration (React + TypeScript) -- COMPLETE
 
 **Goal:** Replace Jinja2 templates with a React SPA for better UX, code splitting, and dev tooling.
 
-**Prerequisites:** Phase 3 API tests serve as the contract -- if all API tests pass, the SPA is correctly integrated.
-
-- Initialize React + TypeScript project (Vite) in `frontend/`
+**Completed:**
+- Initialized React 18 + TypeScript project (Vite) in `frontend/`
 - Dev proxy to Flask backend (Vite `server.proxy` -> `localhost:5000`)
-- Define TypeScript interfaces from API test response shapes (Phase 3b output)
-- Migrate page by page: index -> sessions -> session detail -> compare -> upload -> settings -> car-drivers -> tire sets -> track layouts
-- Replace Chart.js vanilla integration with React chart library (recharts or react-chartjs-2)
-- Replace Leaflet vanilla integration with react-leaflet
-- Port `CursorSync` global state to React context
-- Port dashboard widget system to React components
-- Build: Vite produces static bundle -> Flask serves from `LapForge/static/spa/` or Electron loads directly
-- Remove 21 Jinja2 templates once all pages are migrated
-- Update Electron to load SPA directly
+- TypeScript interfaces mirroring all Python models in `frontend/src/types/`
+- Typed API client (`apiGet`, `apiPost`, `apiPatch`, `apiDelete`) in `frontend/src/api/client.ts`
+- All 10 pages migrated: Index, CarDrivers, TireSets, TrackLayouts, Sessions, Upload, Settings, SessionDetail, Compare, CompareDashboard
+- `react-chartjs-2` + Chart.js 4 for telemetry charts with crosshair sync
+- `react-leaflet` for track maps with cursor marker sync
+- CursorSync global state ported to React context (`useSyncExternalStore`)
+- Dashboard widget system ported to React (5 module types: Chart, Map, Readout, LapTimes, TireSummary)
+- Dashboard template save/load modal
+- SyncPanel component (SSE push/pull)
+- BackgroundTaskBar for upload progress
+- Vite builds to `LapForge/static/spa/`, Flask serves SPA on all page routes
+- All 21 Jinja2 templates deleted, `render_template` removed from Flask
+- Old vanilla JS files deleted (`cursor-sync.js`, `dashboard.js`, `telemetry-chart.js`, `map-widget.js`)
+- CI updated to build SPA before PyInstaller freeze
+- PyInstaller spec updated to exclude deleted templates dir
+- New CRUD API routes: car-drivers, tire-sets, track-layouts, sessions-full, session detail, settings, comparisons list, compare dashboard data
 
-**Key changes:** New `frontend/` directory, [LapForge/app.py](LapForge/app.py) becomes pure API (remove all `render_template` calls), `templates/` deleted
+**Key files:** `frontend/` directory, `LapForge/app.py` is now a pure API server, `LapForge/static/spa/` contains the built SPA
 
 ---
 

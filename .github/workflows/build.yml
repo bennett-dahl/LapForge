@@ -34,6 +34,12 @@ jobs:
         run: |
           python -m pytest tests/ --ignore=tests/e2e -v --tb=short --cov=LapForge --cov-report=term-missing --cov-fail-under=50
 
+      - name: Build React SPA
+        run: |
+          npm ci
+          npm run build:spa
+        working-directory: frontend
+
       - name: Inject build defaults
         run: |
           echo '{"GOOGLE_CLIENT_ID":"${{ secrets.GOOGLE_CLIENT_ID }}","GOOGLE_CLIENT_SECRET":"${{ secrets.GOOGLE_CLIENT_SECRET }}"}' > LapForge/_build_defaults.json

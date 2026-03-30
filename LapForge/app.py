@@ -27,8 +27,8 @@ from flask import (
     Response,
     jsonify,
     redirect,
-    render_template,
     request,
+    send_file,
     stream_with_context,
     url_for,
 )
@@ -276,6 +276,66 @@ def create_app() -> Flask:
             "yMax": y_max,
         }
 
+    def _build_dashboard_data(sd: dict, session: Any, st: Any) -> dict | None:
+        """Build a complete dashboard blob for the SPA from v2 session data."""
+        times = sd.get("times") or []
+        distances = sd.get("distances") or []
+        series = sd.get("series") or {}
+        channel_meta = sd.get("channel_meta") or {}
+        summary_blob = sd.get("summary") or {}
+        lap_splits = sd.get("lap_splits") or []
+        lap_split_distances = sd.get("lap_split_distances") or lap_splits
+        has_distance = bool(distances)
+
+        cat_groups: dict[str, list[str]] = {}
+        for cname, cmeta in channel_meta.items():
+            cat = cmeta.get("category", "other")
+            cat_groups.setdefault(cat, []).append(cname)
+
+        lap_times_raw = summary_blob.get("lap_times") or sd.get("lap_split_times") or []
+        fast_idx = None
+        lap_times = []
+        for i, lt in enumerate(lap_times_raw):
+            t = lt if isinstance(lt, (int, float)) else lt.get("time", lt) if isinstance(lt, dict) else 0
+            lap_times.append({"lap": i + 1, "time": t})
+            if fast_idx is None or t < lap_times[fast_idx]["time"]:
+                fast_idx = i
+
+        reference_lap = sd.get("reference_lap") or {}
+        ref_points = reference_lap.get("points") or []
+        gps_points = []
+        for pt in ref_points:
+            if isinstance(pt, dict) and "lat" in pt and "lng" in pt:
+                gps_points.append({"lat": pt["lat"], "lng": pt["lng"], "distance": pt.get("distance", 0)})
+            elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                gps_points.append({"lat": pt[0], "lng": pt[1], "distance": pt[2] if len(pt) > 2 else 0})
+
+        sections = []
+        track_sections = st.list_track_sections(session.track) if session.track else []
+        for ts_sec in track_sections:
+            sections.append({"name": ts_sec.name, "start_distance": ts_sec.start_distance, "end_distance": ts_sec.end_distance})
+
+        tire_summary = summary_blob.get("pressure_summary_psi")
+
+        target_psi = _session_target_psi(session)
+
+        return {
+            "times": times,
+            "distances": distances,
+            "series": series,
+            "channel_meta": channel_meta,
+            "channels_by_category": cat_groups,
+            "lap_splits": lap_splits,
+            "lap_split_distances": lap_split_distances,
+            "lap_times": lap_times,
+            "has_distance": has_distance,
+            "fast_lap_index": fast_idx,
+            "sections": sections,
+            "points": gps_points,
+            "tire_summary": tire_summary,
+            "target_pressure_psi": target_psi,
+        }
+
     def _build_chart_data_v2(session_data: dict, use_psi: bool, target_psi: float | None = None) -> dict | None:
         """Build chart data from v2 processed blob."""
         times = session_data.get("times") or []
@@ -343,41 +403,22 @@ def create_app() -> Flask:
         print(tb, flush=True)
         return f"<pre>Internal error:\n{tb}</pre>", 500
 
-    # ---- Core routes ----
+    # ---- SPA page routes (all non-API paths serve the SPA) ----
+
+    def _serve_spa():
+        spa_dir = Path(app.static_folder or "") / "spa"
+        index = spa_dir / "index.html"
+        if index.exists():
+            return send_file(index)
+        return "SPA not built. Run: cd frontend && npm run build", 404
 
     @app.route("/")
     def index():
-        car_drivers = store.list_car_drivers()
-        active_id = request.args.get("car_driver_id") or (car_drivers[0].id if car_drivers else None)
-        return render_template("index.html", car_drivers=car_drivers, active_car_driver_id=active_id)
+        return _serve_spa()
 
-    @app.route("/settings", methods=["GET", "POST"])
+    @app.route("/settings")
     def settings():
-        if request.method == "POST":
-            prefs = _get_preferences()
-            v = _safe_float(request.form.get("default_target_pressure_psi"))
-            if v is not None:
-                prefs["default_target_pressure_psi"] = max(14.0, min(35.0, v))
-                prefs["target_psi"] = prefs["default_target_pressure_psi"]
-            for key in ("default_temp_unit", "default_pressure_unit", "default_distance_unit"):
-                val = request.form.get(key, "").strip().lower()
-                if val:
-                    prefs[key] = val
-            # Section detection thresholds
-            lat_g_raw = request.form.get("section_lat_g_threshold", "").strip()
-            if lat_g_raw:
-                prefs["section_lat_g_threshold"] = max(0.05, min(1.0, float(lat_g_raw)))
-            else:
-                prefs["section_lat_g_threshold"] = None
-            for skey, default, lo, hi in [
-                ("section_min_corner_length_m", 30, 5, 200),
-                ("section_merge_gap_m", 50, 5, 200),
-            ]:
-                sv = _safe_float(request.form.get(skey))
-                prefs[skey] = max(lo, min(hi, sv)) if sv is not None else default
-            _save_preferences(prefs)
-            return redirect(url_for("settings"))
-        return render_template("settings.html", prefs=_get_preferences(), data_root=str(store.data_root))
+        return _serve_spa()
 
     @app.route("/api/data-location", methods=["POST"])
     def api_change_data_location():
@@ -610,106 +651,29 @@ def create_app() -> Flask:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.route("/car-drivers")
     @app.route("/car_drivers")
     def car_drivers_list():
-        return render_template("car_drivers.html", car_drivers=store.list_car_drivers())
+        return _serve_spa()
 
-    @app.route("/car_drivers/add", methods=["GET", "POST"])
-    def car_driver_add():
-        if request.method == "POST":
-            car_identifier = request.form.get("car_identifier", "").strip()
-            driver_name = request.form.get("driver_name", "").strip()
-            if car_identifier and driver_name:
-                store.add_car_driver(car_identifier=car_identifier, driver_name=driver_name)
-                return redirect(url_for("car_drivers_list"))
-        return render_template("car_driver_edit.html", car_driver=None)
-
-    @app.route("/car_drivers/<id>/edit", methods=["GET", "POST"])
-    def car_driver_edit(id: str):
-        cd = store.get_car_driver(id)
-        if not cd:
-            return redirect(url_for("car_drivers_list"))
-        if request.method == "POST":
-            cd.car_identifier = request.form.get("car_identifier", "").strip()
-            cd.driver_name = request.form.get("driver_name", "").strip()
-            store.update_car_driver(cd)
-            return redirect(url_for("car_drivers_list"))
-        return render_template("car_driver_edit.html", car_driver=cd)
-
-    @app.route("/car_drivers/<id>/delete", methods=["POST"])
-    def car_driver_delete(id: str):
-        store.delete_car_driver(id)
-        return redirect(url_for("car_drivers_list"))
-
+    @app.route("/tire-sets")
     @app.route("/tire_sets")
     def tire_sets_list():
-        car_driver_id = request.args.get("car_driver_id")
-        pressure_unit = request.args.get("pressure_unit", "bar").lower()
-        if pressure_unit not in ("bar", "psi"):
-            pressure_unit = "bar"
-        tire_sets = store.list_tire_sets(car_driver_id=car_driver_id)
-        car_drivers = store.list_car_drivers()
-        return render_template("tire_sets.html", tire_sets=tire_sets, car_drivers=car_drivers, filter_car_driver_id=car_driver_id, pressure_unit=pressure_unit)
-
-    @app.route("/tire_sets/add", methods=["GET", "POST"])
-    def tire_set_add():
-        car_drivers = store.list_car_drivers()
-        pressure_unit = request.args.get("pressure_unit", "bar").lower()
-        if pressure_unit not in ("bar", "psi"):
-            pressure_unit = "bar"
-        if request.method == "POST":
-            name = request.form.get("name", "").strip()
-            car_driver_id = request.form.get("car_driver_id") or None
-            if name:
-                store.add_tire_set(name=name, car_driver_id=car_driver_id, morning_pressures=_morning_pressures_from_form())
-                return redirect(url_for("tire_sets_list", car_driver_id=car_driver_id))
-        return render_template("tire_set_edit.html", tire_set=None, car_drivers=car_drivers, pressure_unit=pressure_unit)
-
-    @app.route("/tire_sets/<id>/edit", methods=["GET", "POST"])
-    def tire_set_edit(id: str):
-        ts = store.get_tire_set(id)
-        if not ts:
-            return redirect(url_for("tire_sets_list"))
-        car_drivers = store.list_car_drivers()
-        pressure_unit = request.args.get("pressure_unit", "bar").lower()
-        if pressure_unit not in ("bar", "psi"):
-            pressure_unit = "bar"
-        if request.method == "POST":
-            ts.name = request.form.get("name", "").strip()
-            ts.car_driver_id = request.form.get("car_driver_id") or None
-            fl, fr, rl, rr = _morning_pressures_from_form()
-            ts.morning_pressure_fl = fl
-            ts.morning_pressure_fr = fr
-            ts.morning_pressure_rl = rl
-            ts.morning_pressure_rr = rr
-            store.update_tire_set(ts)
-            return redirect(url_for("tire_sets_list", car_driver_id=ts.car_driver_id))
-        return render_template("tire_set_edit.html", tire_set=ts, car_drivers=car_drivers, pressure_unit=pressure_unit)
-
-    @app.route("/tire_sets/<id>/delete", methods=["POST"])
-    def tire_set_delete(id: str):
-        store.delete_tire_set(id)
-        return redirect(url_for("tire_sets_list"))
+        return _serve_spa()
 
     @app.route("/sessions")
     def sessions_list():
-        car_driver_id = request.args.get("car_driver_id")
-        compare_ids = request.args.get("compare_ids", "").strip()
-        sessions = store.list_sessions(car_driver_id=car_driver_id)
-        car_drivers = store.list_car_drivers()
-        return render_template("sessions.html", sessions=sessions, car_drivers=car_drivers, filter_car_driver_id=car_driver_id, compare_ids=compare_ids)
+        return _serve_spa()
 
     # ---- Upload ----
 
     @app.route("/upload", methods=["GET", "POST"])
     def upload():
+        if request.method == "GET":
+            return _serve_spa()
+
         car_drivers = store.list_car_drivers()
         active_id = request.form.get("car_driver_id") or request.args.get("car_driver_id") or (car_drivers[0].id if car_drivers else None)
-        if request.method == "GET":
-            temp_unit = request.args.get("temp_unit", "c").lower()
-            if temp_unit not in ("c", "f"):
-                temp_unit = "c"
-            return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=active_id, parsed=None, form_metadata=None, tire_sets=store.list_tire_sets(), filter_car_driver_id=active_id, temp_unit=temp_unit)
 
         if request.form.get("save") == "1":
             session_type_val = request.form.get("session_type")
@@ -799,9 +763,9 @@ def create_app() -> Flask:
 
         f = request.files.get("file")
         if not f or not f.filename:
-            return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=active_id, parsed=None, form_metadata=None, tire_sets=[], temp_unit="c", error="Select a file.")
+            return jsonify({"error": "Select a file."}), 400
         if not f.filename.lower().endswith(".txt"):
-            return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=active_id, parsed=None, form_metadata=None, tire_sets=[], temp_unit="c", error="File must be .txt")
+            return jsonify({"error": "File must be .txt"}), 400
 
         import tempfile
         path = Path(tempfile.gettempdir()) / f"tire_upload_{uuid.uuid4().hex}.txt"
@@ -809,35 +773,13 @@ def create_app() -> Flask:
             f.save(str(path))
             parsed = load_pi_toolbox_export(path)
         except Exception as e:
-            return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=active_id, parsed=None, form_metadata=None, tire_sets=[], temp_unit="c", error=str(e))
+            return jsonify({"error": str(e)}), 400
         meta = parsed.get("metadata") or {}
-        file_driver = meta.get("DriverName", "")
-        file_car = meta.get("CarName", "")
-        form_metadata = {
-            "car": file_car,
-            "driver": file_driver,
-            "track": meta.get("TrackName", ""),
-            "outing_number": meta.get("OutingNumber", ""),
-            "session_number": meta.get("SessionNumber", ""),
-        }
-
-        matched_id = active_id
-        if file_driver or file_car:
-            fd_lower = file_driver.lower()
-            fc_lower = file_car.lower()
-            for cd in car_drivers:
-                if fd_lower and fd_lower == cd.driver_name.lower():
-                    matched_id = cd.id
-                    break
-                if fc_lower and fc_lower == cd.car_identifier.lower():
-                    matched_id = cd.id
-                    break
-
-        tire_sets = store.list_tire_sets()
-        temp_unit = request.args.get("temp_unit", "c").lower()
-        if temp_unit not in ("c", "f"):
-            temp_unit = "c"
-        return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=matched_id, parsed=parsed, form_metadata=form_metadata, tire_sets=tire_sets, filter_car_driver_id=matched_id, upload_path=str(path), temp_unit=temp_unit)
+        return jsonify({
+            "parsed": True,
+            "metadata": meta,
+            "upload_path": str(path),
+        })
 
     # ---- Background task status API ----
 
@@ -1051,10 +993,7 @@ def create_app() -> Flask:
 
     @app.route("/track-layouts")
     def track_layouts_list():
-        layouts = store.list_track_layouts()
-        sessions = store.list_sessions()
-        session_map = {s.id: s for s in sessions}
-        return render_template("track_layouts.html", layouts=layouts, session_map=session_map)
+        return _serve_spa()
 
     @app.route("/api/track-layouts", methods=["POST"])
     def api_create_track_layout():
@@ -1109,305 +1048,7 @@ def create_app() -> Flask:
 
     @app.route("/sessions/<id>")
     def session_detail(id: str):
-        session = store.get_session(id)
-        if not session:
-            return redirect(url_for("sessions_list"))
-
-        use_psi = request.args.get("unit", "psi").lower() == "psi"
-        use_fahrenheit = request.args.get("temp_unit", "c").lower() == "f"
-        default_tool = "dashboard" if (isinstance(session.parsed_data, dict) and session.parsed_data.get("version") == 2) else "tire_pressure"
-        active_tool = request.args.get("tool", default_tool)
-        tire_set = store.get_tire_set(session.tire_set_id) if session.tire_set_id else None
-        car_driver = store.get_car_driver(session.car_driver_id)
-
-        summary = None
-        chart_data = None
-        parsed = None
-        session_data = None
-        tool_data = None
-
-        is_v2 = (
-            isinstance(session.parsed_data, dict)
-            and session.parsed_data.get("version") == 2
-        )
-
-        _detail_fp = _resolve_fp(session)
-        _needs_reprocess = False
-        if is_v2:
-            if check_needs_reprocess(session.parsed_data) and _detail_fp and _detail_fp.exists():
-                _needs_reprocess = True
-
-        if is_v2:
-            session_data = session.parsed_data
-            summary_blob = session_data.get("summary") or {}
-            summary = summary_blob.get("pressure_summary_psi") if use_psi else summary_blob.get("pressure_summary_bar")
-            chart_data = _build_chart_data_v2(session_data, use_psi, target_psi=_session_target_psi(session))
-            parsed = session_data
-
-            # Tool registry
-            channel_list = summary_blob.get("channel_list") or session_data.get("columns") or []
-            channel_meta = session_data.get("channel_meta") or {}
-            available_tools = get_available_tools(channel_list, channel_meta)
-            current_tool = next((t for t in available_tools if t["tool_name"] == active_tool), None)
-            session_target = _session_target_psi(session)
-            if current_tool and current_tool.get("available") and current_tool.get("prepare_data"):
-                _prefs = _get_preferences()
-                tool_opts: dict[str, Any] = {
-                    "use_psi": use_psi,
-                    "target_psi": session_target,
-                    "channel_meta": channel_meta,
-                    "section_lat_g_threshold": _prefs.get("section_lat_g_threshold"),
-                    "section_min_corner_length_m": _prefs.get("section_min_corner_length_m", 30),
-                    "section_merge_gap_m": _prefs.get("section_merge_gap_m", 50),
-                }
-                if active_tool in ("section_generator", "section_metrics", "track_map"):
-                    saved = store.list_track_sections(session.track)
-                    if saved and not (active_tool == "section_generator" and request.args.get("regen")):
-                        tool_opts["saved_sections"] = [s.to_dict() for s in saved]
-                        if active_tool == "section_metrics":
-                            tool_opts["sections"] = tool_opts["saved_sections"]
-                    layout = None
-                    if session.track_layout_id:
-                        layout = store.get_track_layout_ref(session.track_layout_id)
-                    if not layout:
-                        layout = store.get_track_layout(session.track)
-                    if layout:
-                        session_data = dict(session_data)
-                        session_data["reference_lap"] = layout
-                tool_data = current_tool["prepare_data"](session_data, tool_opts)
-
-                if active_tool == "section_generator" and tool_data and tool_data.get("has_data"):
-                    ref_lap = session_data.get("reference_lap") or {}
-                    lap_idx = ref_lap.get("lap_index")
-                    full_dists = session_data.get("distances") or []
-                    raw_series = session_data.get("series") or {}
-                    split_dists = session_data.get("lap_split_distances") or []
-                    gps_dists = tool_data.get("distances") or []
-                    if lap_idx is not None and full_dists and raw_series and gps_dists:
-                        lap_start_d = split_dists[lap_idx] if lap_idx < len(split_dists) else 0
-                        lap_end_d = split_dists[lap_idx + 1] if (lap_idx + 1) < len(split_dists) else (full_dists[-1] if full_dists else 0)
-                        si = next((i for i, d in enumerate(full_dists) if d >= lap_start_d), 0)
-                        ei = next((i for i, d in enumerate(full_dists) if d >= lap_end_d), len(full_dists))
-                        lap_dists_rel = [d - lap_start_d for d in full_dists[si:ei]]
-
-                        def _resample_to_gps(src_d: list, src_v: list, tgt_d: list) -> list:
-                            """Linear interpolation of src_v(src_d) onto tgt_d."""
-                            out = []
-                            j = 0
-                            n = len(src_d)
-                            for td in tgt_d:
-                                while j < n - 1 and src_d[j + 1] < td:
-                                    j += 1
-                                if j >= n - 1:
-                                    out.append(src_v[-1] if src_v else None)
-                                elif src_d[j + 1] == src_d[j]:
-                                    out.append(src_v[j])
-                                else:
-                                    f = (td - src_d[j]) / (src_d[j + 1] - src_d[j])
-                                    v0, v1 = src_v[j], src_v[j + 1]
-                                    if v0 is None or v1 is None:
-                                        out.append(v0 if v0 is not None else v1)
-                                    else:
-                                        out.append(v0 + f * (v1 - v0))
-                            return out
-
-                        editor_series: dict[str, Any] = {}
-                        editor_meta: dict[str, Any] = {}
-                        for cname, vals in raw_series.items():
-                            cmeta = channel_meta.get(cname, {})
-                            cat = cmeta.get("category", "")
-                            if cat in ("timing", "gps", "derived", "unknown"):
-                                continue
-                            lap_vals = vals[si:ei]
-                            editor_series[cname] = _resample_to_gps(lap_dists_rel, lap_vals, gps_dists)
-                            editor_meta[cname] = cmeta
-                        editor_by_cat: dict[str, list[dict]] = {}
-                        for cname, cmeta_item in editor_meta.items():
-                            cat = cmeta_item.get("category", "other")
-                            editor_by_cat.setdefault(cat, []).append({
-                                "name": cname,
-                                "display": cmeta_item.get("display", cname),
-                                "unit": cmeta_item.get("unit", ""),
-                                "color": cmeta_item.get("color", "#888"),
-                            })
-                        tool_data["editor_chart"] = sanitize_for_json({
-                            "distances": gps_dists,
-                            "series": editor_series,
-                            "channel_meta": editor_meta,
-                            "channels_by_category": editor_by_cat,
-                        })
-
-            # Prepare dashboard data for v2 sessions
-            dashboard_data: dict[str, Any] | None = None
-            if active_tool == "dashboard":
-                stored_layout = None
-                if session.track_layout_id:
-                    stored_layout = store.get_track_layout_ref(session.track_layout_id)
-                if not stored_layout:
-                    stored_layout = store.get_track_layout(session.track)
-                ref = stored_layout if stored_layout else session_data.get("reference_lap")
-                lap_splits = session_data.get("lap_splits") or []
-                lap_times = []
-                for li in range(len(lap_splits) - 1):
-                    dt = lap_splits[li + 1] - lap_splits[li]
-                    if dt > 0:
-                        lap_times.append({"index": li + 1, "time": round(dt, 3)})
-
-                raw_series = session_data.get("series") or {}
-                dash_series: dict[str, Any] = {}
-                dash_meta = dict(channel_meta)
-                for cname, vals in raw_series.items():
-                    cmeta = channel_meta.get(cname, {})
-                    if use_psi and cmeta.get("unit") == "bar" and cmeta.get("category") == "pressure":
-                        dash_series[cname] = [
-                            round(v * BAR_TO_PSI, 4) if v is not None else None
-                            for v in vals
-                        ]
-                        dash_meta[cname] = {**cmeta, "unit": "psi"}
-                    else:
-                        dash_series[cname] = vals
-
-                channels_by_cat: dict[str, list[dict]] = {}
-                skip_cats = {"timing", "gps", "derived"}
-                for cname, cmeta_item in dash_meta.items():
-                    cat = cmeta_item.get("category", "unknown")
-                    if cat in skip_cats or cname not in dash_series:
-                        continue
-                    channels_by_cat.setdefault(cat, []).append({
-                        "name": cname,
-                        "display": cmeta_item.get("display", cname),
-                        "unit": cmeta_item.get("unit", ""),
-                        "color": cmeta_item.get("color", "#888"),
-                        "category": cat,
-                    })
-
-                raw_pres_chart = session_data.get("raw_pressure_chart") or {}
-                raw_pres_out: dict[str, Any] = {}
-                for cname, vals in raw_pres_chart.items():
-                    cmeta = channel_meta.get(cname, {})
-                    if use_psi and cmeta.get("unit") == "bar":
-                        raw_pres_out[cname] = [
-                            round(v * BAR_TO_PSI, 4) if v is not None else None for v in vals
-                        ]
-                    else:
-                        raw_pres_out[cname] = vals
-
-                session_target_psi = _session_target_psi(session)
-                target_val = session_target_psi if use_psi else round(session_target_psi / BAR_TO_PSI, 4)
-                target_unit = "psi" if use_psi else "bar"
-
-                dashboard_data = sanitize_for_json({
-                    "session_id": session.id,
-                    "times": session_data.get("times") or [],
-                    "distances": session_data.get("distances") or [],
-                    "series": dash_series,
-                    "channel_meta": dash_meta,
-                    "channels_by_category": channels_by_cat,
-                    "lap_splits": lap_splits,
-                    "lap_split_distances": session_data.get("lap_split_distances") or [],
-                    "lap_times": lap_times,
-                    "has_distance": bool(session_data.get("distances")),
-                    "reference_lap": {
-                        "lat": ref.get("lat") or [],
-                        "lon": ref.get("lon") or [],
-                        "heading": ref.get("heading") or [],
-                        "distance": ref.get("distance") or [],
-                        "lap_index": ref.get("lap_index"),
-                        "lap_time": ref.get("lap_time"),
-                    } if ref else None,
-                    "fastest_lap_index": summary_blob.get("fastest_lap_index"),
-                    "target_psi": target_val,
-                    "target_unit": target_unit,
-                    "raw_pressure_series": raw_pres_out,
-                })
-        else:
-            available_tools = get_available_tools([])
-            current_tool = None
-            dashboard_data = None
-
-            if isinstance(session.parsed_data, dict) and session.parsed_data.get("processed"):
-                proc = session.parsed_data
-                summary = proc.get("summary_psi") if use_psi else proc.get("summary_bar")
-                times = proc.get("times") or []
-                series_bar = proc.get("series") or {}
-                if times and series_bar:
-                    if use_psi:
-                        series = {c: [round((v or 0) * BAR_TO_PSI, 4) if v is not None else None for v in series_bar[c]] for c in series_bar}
-                    else:
-                        series = series_bar
-                    t_psi = _session_target_psi(session)
-                    t_bar = round(t_psi / BAR_TO_PSI, 4)
-                    if use_psi:
-                        y_min, y_max = CHART_Y_MIN_PSI, CHART_Y_MAX_PSI
-                    else:
-                        y_min = round(CHART_Y_MIN_PSI / BAR_TO_PSI, 4)
-                        y_max = round(CHART_Y_MAX_PSI / BAR_TO_PSI, 4)
-                    chart_data = {
-                        "times": times,
-                        "series": series,
-                        "lap_splits": proc.get("lap_splits") or [],
-                        "target": t_psi if use_psi else t_bar,
-                        "unit": "psi" if use_psi else "bar",
-                        "yMin": y_min,
-                        "yMax": y_max,
-                    }
-                parsed = proc
-
-            if chart_data is None and _detail_fp and _detail_fp.exists():
-                try:
-                    file_parsed = load_pi_toolbox_export(str(_detail_fp))
-                except Exception:
-                    file_parsed = None
-                if file_parsed and file_parsed.get("rows") and file_parsed.get("pressure_columns"):
-                    if summary is None:
-                        summary = _session_summary(file_parsed, use_psi, target_psi=_session_target_psi(session))
-                    parsed = file_parsed
-                    chart_data = _build_chart_data_from_parsed(file_parsed, use_psi, target_psi=_session_target_psi(session))
-
-            if chart_data is None:
-                parsed = _get_parsed_for_session(session)
-                summary = _session_summary(parsed, use_psi, target_psi=_session_target_psi(session)) if summary is None and parsed else summary
-                if parsed and parsed.get("rows") and parsed.get("pressure_columns"):
-                    chart_data = _build_chart_data_from_parsed(parsed, use_psi, target_psi=_session_target_psi(session))
-
-        can_reprocess = bool(_detail_fp and _detail_fp.exists())
-        smoothing_level = int(session.parsed_data.get("smoothing_level", 0)) if (isinstance(session.parsed_data, dict) and session.parsed_data.get("processed")) else 0
-
-        file_meta: dict[str, str] = {}
-        if _detail_fp and _detail_fp.exists():
-            try:
-                file_meta = read_file_metadata(str(_detail_fp))
-            except Exception:
-                pass
-
-        return render_template(
-            "session_detail.html",
-            session=session,
-            parsed=parsed,
-            summary=summary,
-            tire_set=tire_set,
-            car_driver=car_driver,
-            car_drivers=store.list_car_drivers(),
-            chart_data=chart_data,
-            use_psi=use_psi,
-            use_fahrenheit=use_fahrenheit,
-            target_psi=_session_target_psi(session),
-            target_bar=round(_session_target_psi(session) / BAR_TO_PSI, 4),
-            can_reprocess=can_reprocess,
-            needs_reprocess=_needs_reprocess,
-            smoothing_level=smoothing_level,
-            available_tools=available_tools,
-            active_tool=active_tool,
-            current_tool=current_tool,
-            tool_data=tool_data,
-            is_v2=is_v2,
-            dashboard_data=dashboard_data,
-            full_width=(active_tool in ("dashboard", "section_generator")),
-            tire_sets=store.list_tire_sets(session.car_driver_id),
-            track_layouts=store.list_track_layouts(),
-            file_metadata=file_meta,
-            session_types=SessionType,
-        )
+        return _serve_spa()
 
     # ---- Compare ----
 
@@ -1484,69 +1125,17 @@ def create_app() -> Flask:
 
     @app.route("/compare")
     def compare_list():
-        """List saved comparisons and allow creating new ones."""
-        ids_param = request.args.get("ids", "").strip()
-        if ids_param:
-            session_ids = [x.strip() for x in ids_param.split(",") if x.strip()]
-            name = request.args.get("name", "").strip() or "New Comparison"
-            sc = store.add_saved_comparison(name, session_ids)
-            return redirect(url_for("compare_dashboard", id=sc.id))
-        saved_comparisons = store.list_saved_comparisons()
-        all_sessions = store.list_sessions()
-        return render_template("compare.html", saved_comparisons=saved_comparisons, all_sessions=all_sessions)
+        return _serve_spa()
 
     @app.route("/compare/<id>")
     def compare_dashboard(id: str):
-        """Dashboard view for a saved comparison."""
-        sc = store.get_saved_comparison(id)
-        if not sc:
-            return redirect(url_for("compare_list"))
-        use_psi = request.args.get("unit", "psi").lower() == "psi"
-        sessions_blob: list[dict] = []
-        all_channels_by_cat: dict[str, list[dict]] = {}
-        seen_channels: set[str] = set()
-
-        for sid in sc.session_ids:
-            sess = store.get_session(sid)
-            if not sess:
-                continue
-            sd = _build_session_dash_data(sess, use_psi)
-            if not sd:
-                continue
-            sessions_blob.append(sd)
-            ch_meta = sd["channel_meta"]
-            for cname in sd["series"]:
-                if cname in seen_channels:
-                    continue
-                seen_channels.add(cname)
-                cmeta = ch_meta.get(cname, {})
-                cat = cmeta.get("category", "other")
-                all_channels_by_cat.setdefault(cat, []).append({
-                    "name": cname,
-                    "display": cmeta.get("display", cname),
-                    "unit": cmeta.get("unit", ""),
-                    "color": cmeta.get("color", "#888"),
-                    "category": cat,
-                })
-
-        dashboard_data = sanitize_for_json({
-            "comparison_id": sc.id,
-            "comparison_name": sc.name,
-            "sessions": sessions_blob,
-            "channels_by_category": all_channels_by_cat,
-            "all_session_ids": list(sc.session_ids),
-        })
-        all_sessions = store.list_sessions()
-        return render_template(
-            "compare_dashboard.html",
-            comparison=sc,
-            dashboard_data=dashboard_data,
-            use_psi=use_psi,
-            all_sessions=all_sessions,
-            full_width=True,
-        )
+        return _serve_spa()
 
     # ---- Compare API ----
+
+    @app.route("/api/comparisons", methods=["GET"])
+    def api_list_comparisons():
+        return jsonify([sc.to_dict() for sc in store.list_saved_comparisons()])
 
     @app.route("/api/comparisons", methods=["POST"])
     def api_create_comparison():
@@ -1609,6 +1198,45 @@ def create_app() -> Flask:
             out.append({"id": s.id, "label": label, "track": s.track})
         return jsonify(out)
 
+    @app.route("/api/comparisons/<cid>/dashboard-data")
+    def api_comparison_dashboard_data(cid: str):
+        sc = store.get_saved_comparison(cid)
+        if not sc:
+            return jsonify({"error": "Not found"}), 404
+        use_psi = request.args.get("unit", "psi").lower() == "psi"
+        sessions_blob: list[dict] = []
+        all_channels_by_cat: dict[str, list[dict]] = {}
+        seen_channels: set[str] = set()
+        for sid in sc.session_ids:
+            sess = store.get_session(sid)
+            if not sess:
+                continue
+            sd = _build_session_dash_data(sess, use_psi)
+            if not sd:
+                continue
+            sessions_blob.append(sd)
+            ch_meta = sd["channel_meta"]
+            for cname in sd["series"]:
+                if cname in seen_channels:
+                    continue
+                seen_channels.add(cname)
+                cmeta = ch_meta.get(cname, {})
+                cat = cmeta.get("category", "other")
+                all_channels_by_cat.setdefault(cat, []).append({
+                    "name": cname,
+                    "display": cmeta.get("display", cname),
+                    "unit": cmeta.get("unit", ""),
+                    "color": cmeta.get("color", "#888"),
+                    "category": cat,
+                })
+        return jsonify(sanitize_for_json({
+            "comparison_id": sc.id,
+            "comparison_name": sc.name,
+            "sessions": sessions_blob,
+            "channels_by_category": all_channels_by_cat,
+            "all_session_ids": list(sc.session_ids),
+        }))
+
     # ---- Dashboard Templates API ----
 
     @app.route("/api/dashboard-templates", methods=["GET"])
@@ -1669,6 +1297,241 @@ def create_app() -> Flask:
             return jsonify({"error": "layout must be an array"}), 400
         store.save_compare_dashboard_layout(cid, layout)
         return jsonify({"ok": True})
+
+    # ---- SPA CRUD APIs ----
+
+    @app.route("/api/car-drivers")
+    def api_car_drivers_list():
+        return jsonify([cd.to_dict() for cd in store.list_car_drivers()])
+
+    @app.route("/api/car-drivers", methods=["POST"])
+    def api_car_drivers_create():
+        data = request.get_json(silent=True) or {}
+        car_identifier = (data.get("car_identifier") or "").strip()
+        driver_name = (data.get("driver_name") or "").strip()
+        if not car_identifier or not driver_name:
+            return jsonify({"error": "car_identifier and driver_name required"}), 400
+        cd = store.add_car_driver(car_identifier, driver_name)
+        return jsonify({"ok": True, "car_driver": cd.to_dict()})
+
+    @app.route("/api/car-drivers/<cd_id>", methods=["PATCH"])
+    def api_car_drivers_update(cd_id: str):
+        cd = store.get_car_driver(cd_id)
+        if not cd:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        if "car_identifier" in data:
+            cd.car_identifier = data["car_identifier"].strip()
+        if "driver_name" in data:
+            cd.driver_name = data["driver_name"].strip()
+        store.update_car_driver(cd)
+        return jsonify({"ok": True})
+
+    @app.route("/api/car-drivers/<cd_id>", methods=["DELETE"])
+    def api_car_drivers_delete(cd_id: str):
+        store.delete_car_driver(cd_id)
+        return jsonify({"ok": True})
+
+    @app.route("/api/tire-sets")
+    def api_tire_sets_list():
+        car_driver_id = request.args.get("car_driver_id")
+        all_sets = store.list_tire_sets()
+        if car_driver_id:
+            all_sets = [ts for ts in all_sets if ts.car_driver_id == car_driver_id or ts.car_driver_id is None]
+        return jsonify([ts.to_dict() for ts in all_sets])
+
+    @app.route("/api/tire-sets", methods=["POST"])
+    def api_tire_sets_create():
+        data = request.get_json(silent=True) or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name required"}), 400
+        ts = store.add_tire_set(
+            name=name,
+            car_driver_id=data.get("car_driver_id"),
+            morning_pressures=(
+                data.get("morning_pressure_fl"),
+                data.get("morning_pressure_fr"),
+                data.get("morning_pressure_rl"),
+                data.get("morning_pressure_rr"),
+            ),
+        )
+        return jsonify({"ok": True, "tire_set": ts.to_dict()})
+
+    @app.route("/api/tire-sets/<ts_id>", methods=["PATCH"])
+    def api_tire_sets_update(ts_id: str):
+        ts = store.get_tire_set(ts_id)
+        if not ts:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        for field in ("name", "car_driver_id", "morning_pressure_fl", "morning_pressure_fr",
+                       "morning_pressure_rl", "morning_pressure_rr"):
+            if field in data:
+                setattr(ts, field, data[field])
+        store.update_tire_set(ts)
+        return jsonify({"ok": True})
+
+    @app.route("/api/tire-sets/<ts_id>", methods=["DELETE"])
+    def api_tire_sets_delete(ts_id: str):
+        store.delete_tire_set(ts_id)
+        return jsonify({"ok": True})
+
+    @app.route("/api/sessions/<sid>/detail")
+    def api_session_detail(sid: str):
+        session = store.get_session(sid)
+        if not session:
+            return jsonify({"error": "Not found"}), 404
+
+        use_psi = request.args.get("unit", "psi").lower() == "psi"
+        car_driver = store.get_car_driver(session.car_driver_id)
+        tire_set = store.get_tire_set(session.tire_set_id) if session.tire_set_id else None
+        is_v2 = isinstance(session.parsed_data, dict) and session.parsed_data.get("version") == 2
+
+        _detail_fp = _resolve_fp(session)
+        _needs_reprocess = False
+        can_reprocess = bool(_detail_fp and _detail_fp.exists())
+        if is_v2 and can_reprocess:
+            _needs_reprocess = check_needs_reprocess(session.parsed_data)
+
+        chart_data = None
+        dashboard_data = None
+        summary = None
+        tool_data = None
+        available_tools: list[str] = []
+        smoothing = 0
+
+        if is_v2 and session.parsed_data:
+            sd = session.parsed_data
+            summary_blob = sd.get("summary") or {}
+            summary = summary_blob.get("pressure_summary_psi") if use_psi else summary_blob.get("pressure_summary_bar")
+            chart_data = _build_chart_data_v2(sd, use_psi, target_psi=_session_target_psi(session))
+            smoothing = sd.get("smoothing_level", 0)
+
+            channel_list = summary_blob.get("channel_list") or sd.get("columns") or []
+            channel_meta = sd.get("channel_meta") or {}
+            tool_list = get_available_tools(channel_list, channel_meta)
+            available_tools = [t["tool_name"] for t in tool_list if t.get("available")]
+
+            dashboard_data = _build_dashboard_data(sd, session, store)
+
+        return jsonify({
+            "session": session.to_dict(),
+            "summary": summary,
+            "chart_data": chart_data,
+            "dashboard_data": dashboard_data,
+            "available_tools": available_tools,
+            "tool_data": tool_data,
+            "tire_set": tire_set.to_dict() if tire_set else None,
+            "car_driver": car_driver.to_dict() if car_driver else None,
+            "car_drivers": [cd.to_dict() for cd in store.list_car_drivers()],
+            "tire_sets": [ts.to_dict() for ts in store.list_tire_sets()],
+            "track_layouts": [tl.to_dict() for tl in store.list_track_layouts()],
+            "can_reprocess": can_reprocess,
+            "needs_reprocess": _needs_reprocess,
+            "smoothing_level": smoothing,
+            "is_v2": is_v2,
+        })
+
+    @app.route("/api/sessions/<sid>", methods=["PATCH"])
+    def api_session_update(sid: str):
+        session = store.get_session(sid)
+        if not session:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        for field in ("tire_set_id", "track_layout_id", "ambient_temp_c", "track_temp_c",
+                       "target_pressure_psi", "lap_count_notes"):
+            if field in data:
+                setattr(session, field, data[field])
+        store.update_session(session)
+        return jsonify({"ok": True})
+
+    @app.route("/api/sessions-full")
+    def api_sessions_full():
+        """Full session list with metadata for the SPA sessions page."""
+        sessions = store.list_sessions()
+        car_drivers = store.list_car_drivers()
+        out = []
+        for s in sessions:
+            pd = s.parsed_data or {}
+            lap_count = len(pd.get("lap_split_times", [])) if pd else 0
+            out.append({
+                "id": s.id,
+                "car_driver_id": s.car_driver_id,
+                "session_type": s.session_type.value,
+                "track": s.track,
+                "driver": s.driver,
+                "car": s.car,
+                "outing_number": s.outing_number,
+                "session_number": s.session_number,
+                "ambient_temp_c": s.ambient_temp_c,
+                "track_temp_c": s.track_temp_c,
+                "lap_count": lap_count,
+            })
+        return jsonify({
+            "sessions": out,
+            "car_drivers": [cd.to_dict() for cd in car_drivers],
+        })
+
+    @app.route("/api/sessions/<sid>", methods=["DELETE"])
+    def api_session_delete(sid: str):
+        s = store.get_session(sid)
+        if not s:
+            return jsonify({"error": "Not found"}), 404
+        store.delete_session(sid)
+        return jsonify({"ok": True})
+
+    @app.route("/api/track-layouts")
+    def api_track_layouts_list():
+        layouts = store.list_track_layouts()
+        sessions = store.list_sessions()
+        session_map = {}
+        for s in sessions:
+            if s.track_layout_id:
+                session_map[s.track_layout_id] = f"{s.car} / {s.track} / {s.session_type.value}"
+        return jsonify({
+            "layouts": [tl.to_dict() for tl in layouts],
+            "session_map": session_map,
+        })
+
+    @app.route("/api/settings")
+    def api_settings_get():
+        prefs = {}
+        if PREFERENCES_PATH.exists():
+            try:
+                prefs = json.loads(PREFERENCES_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        user = get_current_user()
+        return jsonify({
+            "preferences": prefs,
+            "data_root": str(store.data_root),
+            "user": user,
+            "oauth_enabled": app.config.get("OAUTH_ENABLED", False),
+        })
+
+    @app.route("/api/settings", methods=["PATCH"])
+    def api_settings_update():
+        data = request.get_json(silent=True) or {}
+        prefs = {}
+        if PREFERENCES_PATH.exists():
+            try:
+                prefs = json.loads(PREFERENCES_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        prefs.update(data)
+        PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PREFERENCES_PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+        return jsonify({"ok": True})
+
+    # ---- Auth user API (for SPA) ----
+
+    @app.route("/api/auth/user")
+    def api_auth_user():
+        user = get_current_user()
+        return jsonify({
+            "user": user,
+            "oauth_enabled": app.config.get("OAUTH_ENABLED", False),
+        })
 
     return app
 

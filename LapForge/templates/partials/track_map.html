@@ -1,7 +1,0 @@
-<div class="card">
-  <h2>Track Map</h2>
-  {% if tool_data.lap_time %}
-  <p class="muted">Reference lap: Lap {{ (tool_data.lap_index or 0) + 1 }} ({{ '%.2f'|format(tool_data.lap_time) }} s)</p>
-  {% endif %}
-  <div id="track-map-container" style="height:450px;border-radius:6px;overflow:hidden;"></div>
-</div>

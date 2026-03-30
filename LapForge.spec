@@ -52,7 +52,6 @@ a = Analysis(
     pathex=[project_root],
     binaries=[],
     datas=[
-        (os.path.join('LapForge', 'templates'), os.path.join('LapForge', 'templates')),
         (os.path.join('LapForge', 'static'), os.path.join('LapForge', 'static')),
     ] + metadata_datas + (
         [(os.path.join('LapForge', '_build_defaults.json'), 'LapForge')]

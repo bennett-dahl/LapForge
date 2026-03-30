@@ -45,6 +45,13 @@ def e2e_server(e2e_data_root, tmp_path_factory):
     app = create_app()
     app.config["TESTING"] = False
 
+    spa_index = Path(app.static_folder) / "spa" / "index.html"
+    if not spa_index.exists():
+        pytest.skip(
+            "SPA not built — run 'cd frontend && npm run build:spa' first",
+            allow_module_level=True,
+        )
+
     port = _find_free_port()
     base_url = f"http://127.0.0.1:{port}"
 

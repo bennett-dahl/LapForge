@@ -1,9 +1,8 @@
 # LapForge Conversation Context
 
-> Last updated: 2026-03-29
-> Conversation ID: d25bdf8e-20cd-4630-9fbb-49bed8b5ca99
-> Current app version: v1.5.0
-> Latest git commit: `09a142b` (Fix update notification: prevent duplicate handler registration)
+> Last updated: 2026-03-30
+> Current app version: v1.5.3
+> Phase 4 SPA migration complete
 
 ---
 
@@ -37,8 +36,24 @@ LapForge/                  # Python package (Flask backend)
   tools/                   # Session detail tool plugins
     __init__.py, channel_chart.py, section_generator.py, section_metrics.py,
     tire_pressure.py, track_map.py
-  templates/               # 21 Jinja2 templates (to be replaced in Phase 4)
-  static/                  # CSS, favicon, brand images
+  static/                  # CSS, favicon, brand images, SPA build output (static/spa/)
+
+frontend/                  # React + TypeScript SPA (Vite)
+  src/
+    api/client.ts          # Typed fetch wrapper (apiGet, apiPost, apiPatch, apiDelete)
+    types/models.ts        # TypeScript interfaces mirroring models.py
+    types/api.ts           # Request/response types for all API endpoints
+    layouts/AppLayout.tsx  # Sidebar + Outlet (ported from base.html)
+    pages/                 # IndexPage, CarDriversPage, TireSetsPage, TrackLayoutsPage,
+                           # SessionsPage, UploadPage, SettingsPage, SessionDetailPage,
+                           # ComparePage, CompareDashboardPage
+    components/
+      ui/                  # Button, Modal
+      charts/              # TelemetryChart (react-chartjs-2), TirePressureChart
+      maps/                # TrackMap (react-leaflet)
+      tools/               # ChannelChart, TrackMapTool, SectionEditor, SectionMetrics, TirePressureTool
+      dashboard/           # Dashboard, DashboardTemplateModal, modules/*
+    contexts/              # CursorSyncContext (replaces cursor-sync.js)
 
 electron/                  # Electron shell
   main.js                  # Main process: spawns Flask, auto-updater, native menus
