@@ -1,6 +1,6 @@
 {
   "name": "lapforge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "LapForge - Telemetry Analysis Tool",
   "main": "main.js",
   "scripts": {
@@ -42,7 +42,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "icons/icon.png"
+      "icon": "icons/icon.ico"
     },
     "nsis": {
       "oneClick": false,

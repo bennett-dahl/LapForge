@@ -75,7 +75,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon=None,
+    icon=os.path.join('electron', 'icons', 'icon.ico'),
 )
 
 coll = COLLECT(

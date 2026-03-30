@@ -2,7 +2,7 @@
   --bg: #1a1a1e;
   --fg: #e4e4e7;
   --muted: #71717a;
-  --accent: #3b82f6;
+  --accent: #c8960c;
   --border: #27272a;
 }
 
@@ -30,7 +30,7 @@ a:hover { text-decoration: underline; }
   --sb-collapsed-width: 56px;
   --sb-bg: #111114;
   --sb-hover: rgba(255,255,255,0.06);
-  --sb-active-bg: rgba(59,130,246,0.15);
+  --sb-active-bg: rgba(200,150,12,0.15);
   --sb-transition: 0.2s cubic-bezier(.4,0,.2,1);
 }
 
@@ -60,9 +60,9 @@ a:hover { text-decoration: underline; }
   overflow: hidden;
 }
 .sb-logo {
-  width: 28px; height: 28px;
+  height: 22px;
+  width: auto;
   flex-shrink: 0;
-  color: var(--accent);
 }
 .sb-title {
   font-weight: 700;
@@ -932,7 +932,7 @@ textarea.settings-input {
   padding: 0;
   transition: background 0.12s, border-color 0.12s;
 }
-.sec-type-btn.is-corner { background: rgba(59,130,246,0.15); border-color: #3b82f6; color: #3b82f6; }
+.sec-type-btn.is-corner { background: rgba(200,150,12,0.15); border-color: var(--accent); color: var(--accent); }
 .sec-type-btn.is-straight { background: rgba(148,163,184,0.15); border-color: #94a3b8; color: #94a3b8; }
 .sec-type-btn:hover { border-color: var(--accent); color: var(--accent); }
 
@@ -1271,7 +1271,7 @@ textarea.settings-input {
   background: var(--bg, #1a1a2e);
 }
 .sm-row-fastest .sm-col-fixed { background: color-mix(in srgb, var(--bg, #1a1a2e) 92%, #22c55e); }
-.sm-row-ref .sm-col-fixed { background: color-mix(in srgb, var(--bg, #1a1a2e) 92%, #3b82f6); }
+.sm-row-ref .sm-col-fixed { background: color-mix(in srgb, var(--bg, #1a1a2e) 92%, var(--accent)); }
 .sm-row-highlight .sm-col-fixed { background: color-mix(in srgb, var(--bg, #1a1a2e) 85%, #facc15) !important; }
 .sm-row-vb .sm-col-fixed { background: var(--bg, #1a1a2e); }
 thead .sm-col-fixed { z-index: 3; background: var(--bg, #1a1a2e); }
@@ -1393,7 +1393,7 @@ thead .sm-col-fixed { z-index: 3; background: var(--bg, #1a1a2e); }
 }
 .bg-upload-fill {
   height: 100%;
-  background: var(--accent, #3b82f6);
+  background: var(--accent, #c8960c);
   border-radius: 3px;
   transition: width 0.3s ease;
 }
@@ -1408,7 +1408,7 @@ thead .sm-col-fixed { z-index: 3; background: var(--bg, #1a1a2e); }
 }
 .bg-upload-link {
   font-size: 0.75rem;
-  color: var(--accent, #3b82f6);
+  color: var(--accent, #c8960c);
   text-decoration: none;
   white-space: nowrap;
 }

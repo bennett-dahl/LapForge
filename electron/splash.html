@@ -5,29 +5,36 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    width: 400px; height: 300px;
+    width: 420px; height: 280px;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
-    background: #18181b; color: #e4e4e7;
+    background: #111114; color: #e4e4e7;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     border-radius: 12px;
     -webkit-app-region: drag;
     overflow: hidden;
   }
-  .logo {
-    width: 64px; height: 64px; margin-bottom: 20px;
-    stroke: #3b82f6; fill: none;
+  .logo-img {
+    height: 100px;
+    margin-bottom: 24px;
+    object-fit: contain;
   }
-  .title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
-  .subtitle { font-size: 13px; color: #a1a1aa; margin-bottom: 24px; }
+  .subtitle {
+    font-size: 12px;
+    color: #a1a1aa;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
   .spinner-track {
-    width: 200px; height: 4px;
+    width: 200px; height: 3px;
     background: #27272a; border-radius: 2px;
     overflow: hidden;
   }
   .spinner-fill {
     width: 40%; height: 100%;
-    background: #3b82f6; border-radius: 2px;
+    background: linear-gradient(90deg, #b8860b, #daa520, #c8a000);
+    border-radius: 2px;
     animation: slide 1.2s ease-in-out infinite;
   }
   @keyframes slide {
@@ -37,12 +44,10 @@
 </style>
 </head>
 <body>
-  <svg class="logo" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="12" cy="12" r="10"/>
-    <path d="M12 6v6l4 2"/>
-  </svg>
-  <div class="title">LapForge</div>
-  <div class="subtitle">Starting&hellip;</div>
+  <img class="logo-img" src="../LapForge/static/images/logo.png" alt="LapForge"
+       onerror="this.style.display='none';document.getElementById('fallback').style.display='block';">
+  <div id="fallback" style="display:none;font-size:22px;font-weight:700;color:#daa520;margin-bottom:24px;">LAPFORGE</div>
+  <div class="subtitle">Forging Performance from Data</div>
   <div class="spinner-track"><div class="spinner-fill"></div></div>
 </body>
 </html>
