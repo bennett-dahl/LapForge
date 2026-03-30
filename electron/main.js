@@ -12,6 +12,7 @@ let splashWindow = null;
 let backendProcess = null;
 let backendPort = null;
 let lastUpdateStatus = null;
+let autoUpdaterInitialized = false;
 
 // --------------- Auto-updater setup ---------------
 
@@ -24,10 +25,12 @@ function log(msg) {
 }
 
 function initAutoUpdater() {
+  if (autoUpdaterInitialized) return;
   if (IS_DEV || !app.isPackaged) {
     log('Auto-updater skipped (dev mode)');
     return;
   }
+  autoUpdaterInitialized = true;
 
   autoUpdater.on('checking-for-update', () => {
     log('Updater: checking for update...');
@@ -382,7 +385,11 @@ if (!gotLock) {
       await waitForServer(port, 20, 500);
       createMainWindow(port);
       mainWindow.webContents.on('did-finish-load', () => {
-        initAutoUpdater();
+        if (!autoUpdaterInitialized) {
+          initAutoUpdater();
+        } else if (lastUpdateStatus) {
+          mainWindow.webContents.send('update-status', lastUpdateStatus);
+        }
       });
     } catch (err) {
       dialog.showErrorBox('Startup Error', err.message);
