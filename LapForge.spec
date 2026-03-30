@@ -75,7 +75,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon=os.path.join('electron', 'icons', 'icon.png') if os.path.exists(os.path.join('electron', 'icons', 'icon.png')) else None,
+    icon=None,
 )
 
 coll = COLLECT(
