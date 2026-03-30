@@ -78,12 +78,20 @@ def clear_stored_token(user_key: str) -> None:
 
 # ---- Blueprint routes ----
 
+def _google_client():
+    """Return the registered Google OAuth client, or None if not configured."""
+    if "google" not in oauth._registry and "google" not in oauth._clients:
+        return None
+    return oauth.google
+
+
 @auth_bp.route("/login")
 def login():
-    if not oauth.google:
+    client = _google_client()
+    if not client:
         return redirect(url_for("settings"))
     redirect_uri = url_for("auth.callback", _external=True)
-    return oauth.google.authorize_redirect(
+    return client.authorize_redirect(
         redirect_uri,
         access_type="offline",
         prompt="consent",
@@ -92,10 +100,11 @@ def login():
 
 @auth_bp.route("/callback")
 def callback():
-    if not oauth.google:
+    client = _google_client()
+    if not client:
         return redirect(url_for("index"))
 
-    token = oauth.google.authorize_access_token()
+    token = client.authorize_access_token()
     userinfo: dict = token.get("userinfo", {})
 
     if not userinfo.get("sub"):

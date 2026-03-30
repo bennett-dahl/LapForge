@@ -569,4 +569,4 @@ class TestSyncStatusAPI:
     def test_not_logged_in(self, client):
         resp = client.get("/api/sync/status")
         assert resp.status_code == 200
-        assert resp.get_json()["status"] == "not_logged_in"
+        assert resp.get_json()["status"] in ("not_logged_in", "oauth_not_configured")

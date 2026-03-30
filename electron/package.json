@@ -1,6 +1,6 @@
 {
   "name": "lapforge",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "LapForge - Telemetry Analysis Tool",
   "main": "main.js",
   "scripts": {

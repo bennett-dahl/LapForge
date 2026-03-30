@@ -523,14 +523,14 @@ def create_app() -> Flask:
         """Return current sync status (requires login)."""
         from LapForge.sync.engine import SyncStatus, detect_status, load_sync_state
 
-        user = get_current_user()
-        if not user:
-            return jsonify({"status": "not_logged_in"})
-
         client_id = app.config.get("GOOGLE_CLIENT_ID")
         client_secret = app.config.get("GOOGLE_CLIENT_SECRET")
         if not client_id or not client_secret:
             return jsonify({"status": "oauth_not_configured"})
+
+        user = get_current_user()
+        if not user:
+            return jsonify({"status": "not_logged_in"})
 
         from LapForge.sync.secrets import build_google_credentials
         creds = build_google_credentials(user["user_key"], client_id, client_secret)

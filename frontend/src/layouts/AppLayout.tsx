@@ -50,7 +50,7 @@ export default function AppLayout() {
   const [user, setUser] = useState<AuthUserResponse | null>(null);
 
   useEffect(() => {
-    apiGet<AuthUserResponse>('/api/auth/user').then(setUser).catch(() => {});
+    apiGet<AuthUserResponse>('/api/auth/user').then(setUser).catch(() => setUser(null));
   }, []);
 
   function toggleSidebar() {
@@ -75,7 +75,7 @@ export default function AppLayout() {
           ))}
         </nav>
         <div className="sb-footer">
-          {user?.user && (
+          {user?.user ? (
             <div className="sb-user">
               {user.user.picture ? (
                 <img className="sb-user-avatar" src={user.user.picture} alt="" referrerPolicy="no-referrer" />
@@ -86,7 +86,16 @@ export default function AppLayout() {
               )}
               <span className="sb-label sb-user-name">{user.user.name || user.user.email}</span>
             </div>
-          )}
+          ) : user?.oauth_enabled ? (
+            <a href="/auth/login" className="sb-link sb-login-link">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4" />
+                <polyline points="10 17 15 12 10 7" />
+                <line x1="15" y1="12" x2="3" y2="12" />
+              </svg>
+              <span className="sb-label">Sign in</span>
+            </a>
+          ) : null}
           <button className="sb-toggle" onClick={toggleSidebar} title="Toggle sidebar">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
