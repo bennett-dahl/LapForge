@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import traceback
 import uuid
 from pathlib import Path
@@ -27,7 +28,7 @@ from flask import (
     url_for,
 )
 
-from Decoding.pi_toolbox_export import load_pi_toolbox_export
+from Decoding.pi_toolbox_export import load_pi_toolbox_export, read_file_metadata
 from TirePressure.models import CarDriver, Session, SessionType, TireSet, TrackSection, Weekend
 from TirePressure.processing import (
     BAR_TO_PSI,
@@ -46,19 +47,36 @@ from TirePressure.processing import (
     sanitize_for_json,
     stale_stages,
 )
+from TirePressure.auth.oauth import auth_bp, get_current_user, init_oauth
+from TirePressure.config import AppConfig
 from TirePressure.session_store import SessionStore
 from TirePressure.tools import get_available_tools
 
 
 def create_app() -> Flask:
+    app_config = AppConfig()
+
     app = Flask(__name__, template_folder="templates", static_folder="static")
-    app.secret_key = "tire-pressure-local-only"
+    app.secret_key = app_config.flask_secret_key
     app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
 
-    store = SessionStore()
+    app.config["GOOGLE_CLIENT_ID"] = app_config.google_client_id
+    app.config["GOOGLE_CLIENT_SECRET"] = app_config.google_client_secret
+
+    init_oauth(app)
+    app.register_blueprint(auth_bp)
+
+    store = SessionStore(data_root=app_config.data_root) if app_config.data_root else SessionStore()
     app.store = store  # type: ignore[attr-defined]
 
-    PREFERENCES_PATH = Path(__file__).resolve().parent / "data" / "preferences.json"
+    _bg_tasks: dict[str, dict[str, Any]] = {}
+    _bg_lock = threading.Lock()
+
+    PREFERENCES_PATH = store.data_root / "preferences.json"
+
+    def _resolve_fp(session: Session) -> Path | None:
+        """Resolve session's file_path to an absolute Path, or None."""
+        return store.resolve_file_path(session.file_path)
 
     # ---- Preferences helpers ----
 
@@ -136,9 +154,10 @@ def create_app() -> Flask:
     def _get_parsed_for_session(session: Session) -> dict | None:
         if session.parsed_data:
             return session.parsed_data
-        if session.file_path and Path(session.file_path).exists():
+        fp = _resolve_fp(session)
+        if fp and fp.exists():
             try:
-                return load_pi_toolbox_export(session.file_path)
+                return load_pi_toolbox_export(str(fp))
             except Exception:
                 return None
         return None
@@ -285,7 +304,15 @@ def create_app() -> Flask:
             "yMax": y_max,
         }
 
-    # ---- Context processor for unit defaults ----
+    # ---- Context processors ----
+
+    @app.context_processor
+    def inject_auth():
+        user = get_current_user()
+        return {
+            "current_user": user,
+            "oauth_enabled": app.config.get("OAUTH_ENABLED", False),
+        }
 
     @app.context_processor
     def inject_unit_defaults():
@@ -345,7 +372,224 @@ def create_app() -> Flask:
                 prefs[skey] = max(lo, min(hi, sv)) if sv is not None else default
             _save_preferences(prefs)
             return redirect(url_for("settings"))
-        return render_template("settings.html", prefs=_get_preferences())
+        return render_template("settings.html", prefs=_get_preferences(), data_root=str(store.data_root))
+
+    @app.route("/api/data-location", methods=["POST"])
+    def api_change_data_location():
+        """Change the data_root directory, optionally moving existing data."""
+        nonlocal store, PREFERENCES_PATH
+        import shutil
+
+        data = request.get_json(force=True)
+        new_path_str = (data.get("path") or "").strip()
+        action = data.get("action", "move")  # "move" or "switch"
+
+        if not new_path_str:
+            return jsonify({"error": "Path is required"}), 400
+
+        new_root = Path(new_path_str).resolve()
+        old_root = store.data_root.resolve()
+
+        if new_root == old_root:
+            return jsonify({"ok": True, "message": "Already using this location", "path": str(new_root)})
+
+        has_existing_data = (new_root / "race_data.db").exists() or (new_root / "uploads").exists()
+
+        if action == "check":
+            return jsonify({
+                "has_existing_data": has_existing_data,
+                "old_path": str(old_root),
+                "new_path": str(new_root),
+            })
+
+        try:
+            new_root.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return jsonify({"error": f"Cannot create directory: {e}"}), 400
+
+        if action == "move" and not has_existing_data:
+            try:
+                for item_name in ("race_data.db", "uploads", "preferences.json"):
+                    src = old_root / item_name
+                    if src.exists():
+                        dst = new_root / item_name
+                        shutil.move(str(src), str(dst))
+            except OSError as e:
+                return jsonify({"error": f"Move failed: {e}. Original location unchanged."}), 500
+
+        store = SessionStore(data_root=new_root)
+        app.store = store  # type: ignore[attr-defined]
+        PREFERENCES_PATH = store.data_root / "preferences.json"
+
+        app_config.data_root = new_root
+
+        return jsonify({"ok": True, "path": str(new_root)})
+
+    # ---- Backup / Restore ----
+
+    @app.route("/api/backup/export", methods=["POST"])
+    def api_backup_export():
+        """Create a zip bundle of all data and return its path."""
+        from TirePressure.sync.bundle import build_bundle
+
+        user = get_current_user()
+        user_key = user["user_key"] if user else None
+        dest = store.data_root / f"backup_{__import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        try:
+            path = build_bundle(
+                data_root=store.data_root,
+                device_id=app_config.device_id,
+                user_key=user_key,
+                dest=dest,
+            )
+            return jsonify({"ok": True, "path": str(path), "size_bytes": path.stat().st_size})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/backup/restore", methods=["POST"])
+    def api_backup_restore():
+        """Restore from a zip bundle. Expects JSON { "path": "..." }."""
+        nonlocal store, PREFERENCES_PATH
+        from TirePressure.sync.bundle import read_bundle_manifest, restore_bundle
+
+        data = request.get_json(force=True)
+        bundle_path_str = (data.get("path") or "").strip()
+        if not bundle_path_str or not Path(bundle_path_str).exists():
+            return jsonify({"error": "Bundle file not found"}), 400
+        bundle_path = Path(bundle_path_str)
+
+        try:
+            manifest = restore_bundle(
+                bundle_path=bundle_path,
+                data_root=store.data_root,
+            )
+            store = SessionStore(data_root=store.data_root)
+            app.store = store  # type: ignore[attr-defined]
+            PREFERENCES_PATH = store.data_root / "preferences.json"
+            return jsonify({"ok": True, "manifest": manifest})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # ---- Cloud Sync API ----
+
+    @app.route("/api/sync/status", methods=["GET"])
+    def api_sync_status():
+        """Return current sync status (requires login)."""
+        from TirePressure.sync.engine import SyncStatus, detect_status, load_sync_state
+
+        user = get_current_user()
+        if not user:
+            return jsonify({"status": "not_logged_in"})
+
+        client_id = app.config.get("GOOGLE_CLIENT_ID")
+        client_secret = app.config.get("GOOGLE_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            return jsonify({"status": "oauth_not_configured"})
+
+        from TirePressure.sync.secrets import build_google_credentials
+        creds = build_google_credentials(user["user_key"], client_id, client_secret)
+        if not creds:
+            return jsonify({"status": "no_credentials", "message": "Sign in again to enable sync"})
+
+        try:
+            from TirePressure.sync.cloud_google import DriveClient
+            client = DriveClient(creds)
+            remote_manifest = client.get_remote_manifest()
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+        status = detect_status(
+            store.data_root, app_config.device_id,
+            user["user_key"], remote_manifest,
+        )
+        state = load_sync_state(store.data_root)
+        return jsonify({
+            "status": status.value,
+            "last_synced_at": state.get("last_synced_at"),
+            "remote_timestamp": remote_manifest.get("created_at") if remote_manifest else None,
+        })
+
+    @app.route("/api/sync/files", methods=["GET"])
+    def api_sync_files():
+        """Return per-file sync inventory (local comparison, no Drive calls)."""
+        from TirePressure.sync.engine import build_file_list
+
+        user = get_current_user()
+        if not user:
+            return jsonify({"error": "Not signed in"}), 401
+        return jsonify(build_file_list(
+            store.data_root, app_config.device_id, user["user_key"],
+        ))
+
+    @app.route("/api/sync/push", methods=["POST"])
+    def api_sync_push():
+        """Push local data to cloud, streaming SSE progress events."""
+        nonlocal store, PREFERENCES_PATH
+        from TirePressure.sync.engine import do_push
+
+        user = get_current_user()
+        if not user:
+            return jsonify({"error": "Not signed in"}), 401
+
+        client_id = app.config.get("GOOGLE_CLIENT_ID")
+        client_secret = app.config.get("GOOGLE_CLIENT_SECRET")
+        from TirePressure.sync.secrets import build_google_credentials
+        creds = build_google_credentials(user["user_key"], client_id, client_secret)
+        if not creds:
+            return jsonify({"error": "No credentials. Sign in again."}), 401
+
+        def generate():
+            try:
+                for evt in do_push(
+                    store.data_root, app_config.device_id,
+                    user["user_key"], creds,
+                ):
+                    yield f"data: {json.dumps(evt)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.route("/api/sync/pull", methods=["POST"])
+    def api_sync_pull():
+        """Pull latest data from cloud, streaming SSE progress events."""
+        nonlocal store, PREFERENCES_PATH
+        from TirePressure.sync.engine import do_pull
+
+        user = get_current_user()
+        if not user:
+            return jsonify({"error": "Not signed in"}), 401
+
+        client_id = app.config.get("GOOGLE_CLIENT_ID")
+        client_secret = app.config.get("GOOGLE_CLIENT_SECRET")
+        from TirePressure.sync.secrets import build_google_credentials
+        creds = build_google_credentials(user["user_key"], client_id, client_secret)
+        if not creds:
+            return jsonify({"error": "No credentials. Sign in again."}), 401
+
+        def generate():
+            nonlocal store, PREFERENCES_PATH
+            try:
+                last_evt = None
+                for evt in do_pull(store.data_root, creds):
+                    last_evt = evt
+                    yield f"data: {json.dumps(evt)}\n\n"
+                if last_evt and last_evt.get("event") == "complete":
+                    store = SessionStore(data_root=store.data_root)
+                    app.store = store  # type: ignore[attr-defined]
+                    PREFERENCES_PATH = store.data_root / "preferences.json"
+            except Exception as e:
+                yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.route("/car_drivers")
     def car_drivers_list():
@@ -441,7 +685,7 @@ def create_app() -> Flask:
     @app.route("/upload", methods=["GET", "POST"])
     def upload():
         car_drivers = store.list_car_drivers()
-        active_id = request.args.get("car_driver_id") or (car_drivers[0].id if car_drivers else None)
+        active_id = request.form.get("car_driver_id") or request.args.get("car_driver_id") or (car_drivers[0].id if car_drivers else None)
         if request.method == "GET":
             temp_unit = request.args.get("temp_unit", "c").lower()
             if temp_unit not in ("c", "f"):
@@ -452,73 +696,87 @@ def create_app() -> Flask:
             session_type_val = request.form.get("session_type")
             car_driver_id = request.form.get("car_driver_id") or active_id
             if not car_driver_id:
-                return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=active_id, parsed=None, form_metadata=None, tire_sets=store.list_tire_sets(), filter_car_driver_id=active_id, temp_unit="c", error="Select or create a car/driver.")
+                return jsonify({"error": "Select or create a car/driver."}), 400
             try:
                 session_type = SessionType(session_type_val or "Practice 1")
             except ValueError:
                 session_type = SessionType.PRACTICE_1
             session_id = str(uuid.uuid4())
-            uploads_dir = Path(__file__).resolve().parent / "data" / "uploads"
-            uploads_dir.mkdir(parents=True, exist_ok=True)
-            persistent_path = uploads_dir / f"{session_id}.txt"
+            persistent_path = store.uploads_dir / f"{session_id}.txt"
+            relative_path = f"uploads/{session_id}.txt"
             import shutil
             upload_path_str = request.form.get("upload_path")
             if not upload_path_str or not Path(upload_path_str).exists():
-                return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=active_id, parsed=None, form_metadata=None, tire_sets=store.list_tire_sets(), filter_car_driver_id=active_id, temp_unit="c", error="Upload file missing. Please upload and parse again.")
+                return jsonify({"error": "Upload file missing. Please upload and parse again."}), 400
 
             default_target = float(_get_preferences().get("default_target_pressure_psi", DEFAULT_TARGET_PSI))
 
-            def _build_session(processed: dict) -> Session:
-                return Session(
-                    id=session_id,
-                    car_driver_id=car_driver_id,
-                    session_type=session_type,
-                    track=request.form.get("track", ""),
-                    driver=request.form.get("driver", ""),
-                    car=request.form.get("car", ""),
-                    outing_number=request.form.get("outing_number", ""),
-                    session_number=request.form.get("session_number", ""),
-                    target_pressure_psi=default_target,
-                    file_path=str(persistent_path),
-                    parsed_data=sanitize_for_json(processed),
-                )
+            form_vals = {
+                "track": request.form.get("track", ""),
+                "driver": request.form.get("driver", ""),
+                "car": request.form.get("car", ""),
+                "outing_number": request.form.get("outing_number", ""),
+                "session_number": request.form.get("session_number", ""),
+            }
 
-            if request.form.get("stream") == "1":
-                def save_stream():
-                    try:
-                        yield "PROGRESS:0\n"
-                        parsed = load_pi_toolbox_export(upload_path_str)
-                        yield "PROGRESS:10\n"
-                        processed = None
-                        for pct, stage_label, data in process_session_streaming(parsed, target_psi=default_target):
-                            label_part = f":{stage_label}" if stage_label else ""
-                            yield f"PROGRESS:{pct}{label_part}\n"
-                            if data is not None:
-                                processed = data
-                        if processed is None:
-                            yield "ERROR:Processing failed\n"
-                            return
-                        shutil.copy2(upload_path_str, persistent_path)
-                        Path(upload_path_str).unlink(missing_ok=True)
-                        session = _build_session(processed)
-                        store.add_session(session)
-                        detail_url = url_for("session_detail", id=session_id)
-                        yield f"PROGRESS:100\nREDIRECT:{detail_url}\n"
-                    except Exception as e:
-                        yield f"ERROR:{str(e)}\n"
+            task_id = session_id
+            with _bg_lock:
+                _bg_tasks[task_id] = {
+                    "pct": 0, "stage": "Starting…", "error": None,
+                    "done": False, "redirect": None, "label": form_vals["track"] or "Upload",
+                }
 
-                return Response(stream_with_context(save_stream()), content_type="text/plain; charset=utf-8")
+            def _run_bg():
+                try:
+                    with _bg_lock:
+                        _bg_tasks[task_id]["pct"] = 5
+                        _bg_tasks[task_id]["stage"] = "Parsing file"
+                    parsed_data = load_pi_toolbox_export(upload_path_str)
+                    with _bg_lock:
+                        _bg_tasks[task_id]["pct"] = 10
+                        _bg_tasks[task_id]["stage"] = "Processing"
+                    processed = None
+                    for pct, stage_label, data in process_session_streaming(parsed_data, target_psi=default_target):
+                        with _bg_lock:
+                            _bg_tasks[task_id]["pct"] = pct
+                            if stage_label:
+                                _bg_tasks[task_id]["stage"] = stage_label
+                        if data is not None:
+                            processed = data
+                    if processed is None:
+                        with _bg_lock:
+                            _bg_tasks[task_id]["error"] = "Processing failed"
+                            _bg_tasks[task_id]["done"] = True
+                        return
+                    shutil.copy2(upload_path_str, persistent_path)
+                    Path(upload_path_str).unlink(missing_ok=True)
+                    session_obj = Session(
+                        id=session_id,
+                        car_driver_id=car_driver_id,
+                        session_type=session_type,
+                        track=form_vals["track"],
+                        driver=form_vals["driver"],
+                        car=form_vals["car"],
+                        outing_number=form_vals["outing_number"],
+                        session_number=form_vals["session_number"],
+                        target_pressure_psi=default_target,
+                        file_path=relative_path,
+                        parsed_data=sanitize_for_json(processed),
+                    )
+                    store.add_session(session_obj)
+                    with _bg_lock:
+                        _bg_tasks[task_id]["pct"] = 100
+                        _bg_tasks[task_id]["stage"] = "Complete"
+                        _bg_tasks[task_id]["done"] = True
+                        _bg_tasks[task_id]["redirect"] = f"/sessions/{session_id}"
+                except Exception as exc:
+                    with _bg_lock:
+                        _bg_tasks[task_id]["error"] = str(exc)
+                        _bg_tasks[task_id]["done"] = True
 
-            try:
-                parsed = load_pi_toolbox_export(upload_path_str)
-                processed = process_session(parsed, target_psi=default_target)
-            except Exception as e:
-                return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=active_id, parsed=None, form_metadata=None, tire_sets=store.list_tire_sets(), filter_car_driver_id=active_id, temp_unit="c", error=f"Process failed: {e}")
-            shutil.copy2(upload_path_str, persistent_path)
-            Path(upload_path_str).unlink(missing_ok=True)
-            session = _build_session(processed)
-            store.add_session(session)
-            return redirect(url_for("session_detail", id=session_id))
+            t = threading.Thread(target=_run_bg, daemon=True)
+            t.start()
+            return jsonify({"task_id": task_id})
 
         f = request.files.get("file")
         if not f or not f.filename:
@@ -534,18 +792,57 @@ def create_app() -> Flask:
         except Exception as e:
             return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=active_id, parsed=None, form_metadata=None, tire_sets=[], temp_unit="c", error=str(e))
         meta = parsed.get("metadata") or {}
+        file_driver = meta.get("DriverName", "")
+        file_car = meta.get("CarName", "")
         form_metadata = {
-            "car": meta.get("CarName", ""),
-            "driver": meta.get("DriverName", ""),
+            "car": file_car,
+            "driver": file_driver,
             "track": meta.get("TrackName", ""),
             "outing_number": meta.get("OutingNumber", ""),
             "session_number": meta.get("SessionNumber", ""),
         }
+
+        matched_id = active_id
+        if file_driver or file_car:
+            fd_lower = file_driver.lower()
+            fc_lower = file_car.lower()
+            for cd in car_drivers:
+                if fd_lower and fd_lower == cd.driver_name.lower():
+                    matched_id = cd.id
+                    break
+                if fc_lower and fc_lower == cd.car_identifier.lower():
+                    matched_id = cd.id
+                    break
+
         tire_sets = store.list_tire_sets()
         temp_unit = request.args.get("temp_unit", "c").lower()
         if temp_unit not in ("c", "f"):
             temp_unit = "c"
-        return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=active_id, parsed=parsed, form_metadata=form_metadata, tire_sets=tire_sets, filter_car_driver_id=active_id, upload_path=str(path), temp_unit=temp_unit)
+        return render_template("upload.html", car_drivers=car_drivers, active_car_driver_id=matched_id, parsed=parsed, form_metadata=form_metadata, tire_sets=tire_sets, filter_car_driver_id=matched_id, upload_path=str(path), temp_unit=temp_unit)
+
+    # ---- Background task status API ----
+
+    @app.route("/api/upload-status/<task_id>")
+    def api_upload_status(task_id: str):
+        with _bg_lock:
+            task = _bg_tasks.get(task_id)
+        if not task:
+            return jsonify({"error": "Unknown task"}), 404
+        return jsonify(task)
+
+    @app.route("/api/upload-tasks")
+    def api_upload_tasks():
+        with _bg_lock:
+            active = {
+                tid: t for tid, t in _bg_tasks.items() if not t["done"]
+            }
+        return jsonify(active)
+
+    @app.route("/api/upload-dismiss/<task_id>", methods=["POST"])
+    def api_upload_dismiss(task_id: str):
+        with _bg_lock:
+            _bg_tasks.pop(task_id, None)
+        return jsonify({"ok": True})
 
     # ---- Session detail and analysis ----
 
@@ -561,6 +858,25 @@ def create_app() -> Flask:
         session = store.get_session(id)
         if not session:
             return redirect(url_for("sessions_list"))
+
+        if request.form.get("car_driver_id"):
+            session.car_driver_id = request.form["car_driver_id"]
+        if request.form.get("session_type"):
+            try:
+                session.session_type = SessionType(request.form["session_type"])
+            except ValueError:
+                pass
+        if "track" in request.form:
+            session.track = request.form["track"]
+        if "driver" in request.form:
+            session.driver = request.form["driver"]
+        if "car" in request.form:
+            session.car = request.form["car"]
+        if "outing_number" in request.form:
+            session.outing_number = request.form["outing_number"]
+        if "session_number" in request.form:
+            session.session_number = request.form["session_number"]
+
         session.ambient_temp_c = _temp_c_from_form(
             request.form.get("temp_unit"), request.form.get("ambient_temp_c"),
         )
@@ -594,10 +910,11 @@ def create_app() -> Flask:
     @app.route("/sessions/<id>/simplify", methods=["POST"])
     def session_simplify(id: str):
         session = store.get_session(id)
-        if not session or not session.file_path or not Path(session.file_path).exists():
+        fp = _resolve_fp(session) if session else None
+        if not session or not fp or not fp.exists():
             return redirect(url_for("session_detail", id=id))
         try:
-            parsed = load_pi_toolbox_export(session.file_path)
+            parsed = load_pi_toolbox_export(str(fp))
             proc = session.parsed_data or {}
             level = int(proc.get("smoothing_level", 0)) + 1
             processed = process_session(parsed, smoothing_level=level, target_psi=_session_target_psi(session))
@@ -610,7 +927,8 @@ def create_app() -> Flask:
     @app.route("/sessions/<id>/restore", methods=["POST"])
     def session_restore(id: str):
         session = store.get_session(id)
-        if not session or not session.file_path or not Path(session.file_path).exists():
+        fp = _resolve_fp(session) if session else None
+        if not session or not fp or not fp.exists():
             return redirect(url_for("session_detail", id=id))
 
         stream_mode = request.form.get("stream") == "1" or request.args.get("stream") == "1"
@@ -622,7 +940,7 @@ def create_app() -> Flask:
                     _stale = stale_stages(existing) if existing else []
                     can_incremental = existing and "core" not in _stale and len(_stale) > 0
                     yield "PROGRESS:0\n"
-                    parsed = load_pi_toolbox_export(session.file_path)
+                    parsed = load_pi_toolbox_export(str(fp))
                     yield "PROGRESS:5\n"
 
                     processed = None
@@ -653,7 +971,7 @@ def create_app() -> Flask:
             return Response(stream_with_context(restore_stream()), content_type="text/plain; charset=utf-8")
 
         try:
-            parsed = load_pi_toolbox_export(session.file_path)
+            parsed = load_pi_toolbox_export(str(fp))
             processed = process_session(parsed, smoothing_level=0, target_psi=_session_target_psi(session))
             session.parsed_data = sanitize_for_json(processed)
             store.update_session(session)
@@ -794,9 +1112,10 @@ def create_app() -> Flask:
             and session.parsed_data.get("version") == 2
         )
 
+        _detail_fp = _resolve_fp(session)
         _needs_reprocess = False
         if is_v2:
-            if check_needs_reprocess(session.parsed_data) and session.file_path and Path(session.file_path).exists():
+            if check_needs_reprocess(session.parsed_data) and _detail_fp and _detail_fp.exists():
                 _needs_reprocess = True
 
         if is_v2:
@@ -1015,9 +1334,9 @@ def create_app() -> Flask:
                     }
                 parsed = proc
 
-            if chart_data is None and session.file_path and Path(session.file_path).exists():
+            if chart_data is None and _detail_fp and _detail_fp.exists():
                 try:
-                    file_parsed = load_pi_toolbox_export(session.file_path)
+                    file_parsed = load_pi_toolbox_export(str(_detail_fp))
                 except Exception:
                     file_parsed = None
                 if file_parsed and file_parsed.get("rows") and file_parsed.get("pressure_columns"):
@@ -1032,8 +1351,15 @@ def create_app() -> Flask:
                 if parsed and parsed.get("rows") and parsed.get("pressure_columns"):
                     chart_data = _build_chart_data_from_parsed(parsed, use_psi, target_psi=_session_target_psi(session))
 
-        can_reprocess = bool(session.file_path and Path(session.file_path).exists())
+        can_reprocess = bool(_detail_fp and _detail_fp.exists())
         smoothing_level = int(session.parsed_data.get("smoothing_level", 0)) if (isinstance(session.parsed_data, dict) and session.parsed_data.get("processed")) else 0
+
+        file_meta: dict[str, str] = {}
+        if _detail_fp and _detail_fp.exists():
+            try:
+                file_meta = read_file_metadata(str(_detail_fp))
+            except Exception:
+                pass
 
         return render_template(
             "session_detail.html",
@@ -1042,6 +1368,7 @@ def create_app() -> Flask:
             summary=summary,
             tire_set=tire_set,
             car_driver=car_driver,
+            car_drivers=store.list_car_drivers(),
             chart_data=chart_data,
             use_psi=use_psi,
             use_fahrenheit=use_fahrenheit,
@@ -1059,6 +1386,8 @@ def create_app() -> Flask:
             full_width=(active_tool in ("dashboard", "section_generator")),
             tire_sets=store.list_tire_sets(session.car_driver_id),
             track_layouts=store.list_track_layouts(),
+            file_metadata=file_meta,
+            session_types=SessionType,
         )
 
     # ---- Compare ----
@@ -1260,6 +1589,67 @@ def create_app() -> Flask:
                 label += f" ({car_driver.display_name()})"
             out.append({"id": s.id, "label": label, "track": s.track})
         return jsonify(out)
+
+    # ---- Dashboard Templates API ----
+
+    @app.route("/api/dashboard-templates", methods=["GET"])
+    def api_list_dashboard_templates():
+        return jsonify(store.list_dashboard_templates())
+
+    @app.route("/api/dashboard-templates", methods=["POST"])
+    def api_create_dashboard_template():
+        data = request.get_json(silent=True) or {}
+        name = (data.get("name") or "").strip()
+        layout = data.get("layout")
+        if not name:
+            return jsonify({"error": "Name is required"}), 400
+        if not isinstance(layout, list):
+            return jsonify({"error": "Layout must be an array"}), 400
+        tpl = store.add_dashboard_template(name, layout)
+        return jsonify(tpl)
+
+    @app.route("/api/dashboard-templates/<tid>", methods=["PATCH"])
+    def api_update_dashboard_template(tid: str):
+        data = request.get_json(silent=True) or {}
+        name = data.get("name")
+        layout = data.get("layout")
+        store.update_dashboard_template(tid, name=name, layout=layout)
+        return jsonify({"ok": True})
+
+    @app.route("/api/dashboard-templates/<tid>", methods=["DELETE"])
+    def api_delete_dashboard_template(tid: str):
+        store.delete_dashboard_template(tid)
+        return jsonify({"ok": True})
+
+    # ---- Per-session / per-comparison dashboard layout API ----
+
+    @app.route("/api/sessions/<sid>/dashboard-layout", methods=["GET"])
+    def api_get_session_dashboard_layout(sid: str):
+        layout = store.get_dashboard_layout(sid)
+        return jsonify({"layout": layout})
+
+    @app.route("/api/sessions/<sid>/dashboard-layout", methods=["PUT"])
+    def api_save_session_dashboard_layout(sid: str):
+        data = request.get_json(silent=True) or {}
+        layout = data.get("layout")
+        if not isinstance(layout, list):
+            return jsonify({"error": "layout must be an array"}), 400
+        store.save_dashboard_layout(sid, layout)
+        return jsonify({"ok": True})
+
+    @app.route("/api/comparisons/<cid>/dashboard-layout", methods=["GET"])
+    def api_get_compare_dashboard_layout(cid: str):
+        layout = store.get_compare_dashboard_layout(cid)
+        return jsonify({"layout": layout})
+
+    @app.route("/api/comparisons/<cid>/dashboard-layout", methods=["PUT"])
+    def api_save_compare_dashboard_layout(cid: str):
+        data = request.get_json(silent=True) or {}
+        layout = data.get("layout")
+        if not isinstance(layout, list):
+            return jsonify({"error": "layout must be an array"}), 400
+        store.save_compare_dashboard_layout(cid, layout)
+        return jsonify({"ok": True})
 
     return app
 

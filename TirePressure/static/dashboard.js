@@ -162,34 +162,74 @@
       return refLapDistMin + frac * refLapLength;
     }
 
-    /* ---- localStorage persistence ---- */
-    var storageKey = (isCompare ? 'dash_compare_layout_' : 'dash_modlayout_') + sessionId;
+    /* ---- Layout persistence (server-backed, syncs across devices) ---- */
+    var _legacyStorageKey = (isCompare ? 'dash_compare_layout_' : 'dash_modlayout_') + sessionId;
+    var _layoutApiUrl = isCompare
+      ? '/api/comparisons/' + encodeURIComponent(sessionId) + '/dashboard-layout'
+      : '/api/sessions/' + encodeURIComponent(sessionId) + '/dashboard-layout';
+
+    var _saveTimer = null;
+    function _buildLayoutState() {
+      return modules.map(function (m) {
+        var o = { type: m.type, id: m.id, width: m.width, height: m.height };
+        if (m.channels) o.channels = m.channels.slice();
+        if (m.yGroups) o.yGroups = m.yGroups;
+        if (m.yScales) o.yScales = m.yScales;
+        if (m.sessionIdx != null) o.sessionIdx = m.sessionIdx;
+        if (m.smoothLevel != null) o.smoothLevel = m.smoothLevel;
+        if (m.showZeroLine) o.showZeroLine = m.showZeroLine;
+        return o;
+      });
+    }
 
     function saveLayout() {
       if (!sessionId) return;
-      try {
-        var state = modules.map(function (m) {
-          var o = { type: m.type, id: m.id, width: m.width, height: m.height };
-          if (m.channels) o.channels = m.channels.slice();
-          if (m.yGroups) o.yGroups = m.yGroups;
-          if (m.yScales) o.yScales = m.yScales;
-          if (m.sessionIdx != null) o.sessionIdx = m.sessionIdx;
-          if (m.smoothLevel != null) o.smoothLevel = m.smoothLevel;
-          return o;
-        });
-        localStorage.setItem(storageKey, JSON.stringify(state));
-      } catch (e) { /* ignore */ }
+      if (_saveTimer) clearTimeout(_saveTimer);
+      _saveTimer = setTimeout(function () {
+        var state = _buildLayoutState();
+        fetch(_layoutApiUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ layout: state }),
+        }).catch(function () {});
+      }, 500);
     }
 
-    function loadLayout() {
-      if (!sessionId) return null;
-      try {
-        var raw = localStorage.getItem(storageKey);
-        if (!raw) return null;
-        var state = JSON.parse(raw);
-        if (!Array.isArray(state) || !state.length) return null;
-        return state;
-      } catch (e) { return null; }
+    function _loadLayoutFromServer(cb) {
+      if (!sessionId) return cb(null);
+      fetch(_layoutApiUrl).then(function (r) { return r.json(); }).then(function (d) {
+        if (d.layout && Array.isArray(d.layout) && d.layout.length) {
+          return cb(d.layout);
+        }
+        var legacy = null;
+        try {
+          var raw = localStorage.getItem(_legacyStorageKey);
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length) legacy = parsed;
+          }
+        } catch (e) {}
+        if (legacy) {
+          fetch(_layoutApiUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ layout: legacy }),
+          }).catch(function () {});
+          try { localStorage.removeItem(_legacyStorageKey); } catch (e) {}
+          return cb(legacy);
+        }
+        cb(null);
+      }).catch(function () {
+        var legacy = null;
+        try {
+          var raw = localStorage.getItem(_legacyStorageKey);
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length) legacy = parsed;
+          }
+        } catch (e) {}
+        cb(legacy);
+      });
     }
 
     /* ---- DOM references ---- */
@@ -473,8 +513,9 @@
       el.appendChild(handle);
       initResizeHandle(handle, body, mod);
 
-      /* drag-and-drop reorder */
+      /* drag-and-drop reorder (only from header, not chart body) */
       el.addEventListener('dragstart', function (e) {
+        if (!e.target.closest('.dash-module-header')) { e.preventDefault(); return; }
         e.dataTransfer.setData('text/plain', mod.id);
         el.classList.add('dragging');
       });
@@ -595,6 +636,7 @@
         lapRelativeX: chartHasDist,
         yGroups: mod.yGroups || null,
         yScales: mod.yScales || null,
+        showZeroLine: mod.showZeroLine || null,
         onHover: function (x) {
           var st = {};
           st[chartXField] = x;
@@ -636,6 +678,7 @@
     var yGroupMod = null;
     var yGroupState = {};
     var yScaleState = {};
+    var yZeroState = {};
 
     function _activeGroups() {
       var seen = {};
@@ -703,11 +746,24 @@
         yScaleState[groupIdx].max = isNaN(v) ? null : v;
       });
 
+      var zeroCb = document.createElement('input');
+      zeroCb.type = 'checkbox';
+      zeroCb.checked = !!yZeroState[groupIdx];
+      zeroCb.title = 'Show zero line';
+      zeroCb.addEventListener('change', function () {
+        yZeroState[groupIdx] = zeroCb.checked;
+      });
+
       inputs.appendChild(document.createTextNode('Min '));
       inputs.appendChild(minInput);
       inputs.appendChild(sep);
       inputs.appendChild(document.createTextNode('Max '));
       inputs.appendChild(maxInput);
+      var zeroLabel = document.createElement('label');
+      zeroLabel.style.cssText = 'display:inline-flex;align-items:center;gap:0.2rem;margin-left:0.5rem;font-size:0.75rem;cursor:pointer;white-space:nowrap;';
+      zeroLabel.appendChild(zeroCb);
+      zeroLabel.appendChild(document.createTextNode('Zero'));
+      inputs.appendChild(zeroLabel);
       row.appendChild(inputs);
       return row;
     }
@@ -716,13 +772,16 @@
       yGroupMod = mod;
       yGroupState = {};
       yScaleState = {};
+      yZeroState = {};
       var existing = mod.yGroups || {};
       var existingScales = mod.yScales || {};
+      var existingZero = mod.showZeroLine || {};
       (mod.channels || []).forEach(function (name) {
         yGroupState[name] = existing[name] != null ? existing[name] : 0;
       });
       GROUP_LABELS.forEach(function (_, gi) {
         if (existingScales[gi]) yScaleState[gi] = { min: existingScales[gi].min, max: existingScales[gi].max };
+        if (existingZero[gi]) yZeroState[gi] = true;
       });
 
       if (yGroupOverlay) yGroupOverlay.remove();
@@ -815,6 +874,7 @@
       resetBtn.addEventListener('click', function () {
         yGroupMod.yGroups = null;
         yGroupMod.yScales = null;
+        yGroupMod.showZeroLine = null;
         applyYGroupChange();
       });
       footer.appendChild(resetBtn);
@@ -842,6 +902,12 @@
           }
         }
         yGroupMod.yScales = hasAnyScale ? cleanScales : null;
+        var cleanZero = {};
+        var hasAnyZero = false;
+        for (var zi in yZeroState) {
+          if (yZeroState[zi]) { cleanZero[zi] = true; hasAnyZero = true; }
+        }
+        yGroupMod.showZeroLine = hasAnyZero ? cleanZero : null;
         applyYGroupChange();
       });
       footer.appendChild(applyBtn);
@@ -861,7 +927,7 @@
       var t = yGroupMod.chart && yGroupMod.chart.telemetry;
       var savedRange = t ? t.getXRange() : null;
       var yBtn = document.getElementById('ybtn-' + yGroupMod.id);
-      if (yBtn) yBtn.classList.toggle('btn-active', !!(yGroupMod.yGroups || yGroupMod.yScales));
+      if (yBtn) yBtn.classList.toggle('btn-active', !!(yGroupMod.yGroups || yGroupMod.yScales || yGroupMod.showZeroLine));
       buildModuleContent(yGroupMod);
       t = yGroupMod.chart && yGroupMod.chart.telemetry;
       if (savedRange && t) t.setXRange(savedRange.min, savedRange.max);
@@ -1302,84 +1368,137 @@
     }
 
     /* ---- Initialize modules ---- */
-    var savedState = loadLayout();
-    if (savedState && savedState.length) {
-      savedState.forEach(function (s) {
-        if (isCompare && (s.type === 'map' || s.type === 'tire-summary')) return;
+    function _applyLayout(savedState) {
+      if (savedState && savedState.length) {
+        savedState.forEach(function (s) {
+          if (isCompare && (s.type === 'map' || s.type === 'tire-summary')) return;
+          var id = 'mod' + (nextModId++);
+          var si = s.sessionIdx != null ? s.sessionIdx : (isCompare ? 0 : undefined);
+          var mod = {
+            type: s.type || 'chart',
+            id: id,
+            width: s.width || 'full',
+            height: s.height || 200,
+            channels: s.channels || null,
+            sessionIdx: si,
+            yGroups: s.yGroups || null,
+            yScales: s.yScales || null,
+            smoothLevel: s.smoothLevel || 0,
+            showZeroLine: s.showZeroLine || null,
+            chart: null,
+          };
+          if (mod.type === 'chart' && mod.channels) {
+            if (isCompare && mod.sessionIdx != null) {
+              mod.channels = mod.channels.filter(function (n) { return channelExistsInSession(n, mod.sessionIdx); });
+            } else {
+              mod.channels = mod.channels.filter(function (n) { return channelExists(n); });
+            }
+          }
+          modules.push(mod);
+          createModuleDOM(mod);
+          buildModuleContent(mod);
+        });
+      } else if (isCompare) {
+        compareSessions.forEach(function (sess, si) {
+          var channels = defaultCompareChannels(si);
+          var mod = {
+            type: 'chart',
+            id: 'mod' + (nextModId++),
+            width: 'full',
+            height: 220,
+            channels: channels,
+            sessionIdx: si,
+            yGroups: null,
+            yScales: null,
+            chart: null,
+          };
+          modules.push(mod);
+          createModuleDOM(mod);
+          buildModuleContent(mod);
+        });
+        var readoutMod = {
+          type: 'readout', id: 'mod' + (nextModId++),
+          width: 'half', height: 300, channels: null, chart: null,
+        };
+        modules.push(readoutMod);
+        createModuleDOM(readoutMod);
+        buildModuleContent(readoutMod);
+      } else {
+        DEFAULT_LAYOUT.forEach(function (preset) {
+          var id = 'mod' + (nextModId++);
+          var channels = null;
+          if (preset.type === 'chart' && preset.channels) {
+            channels = preset.channels.filter(function (n) { return channelExists(n); });
+            if (!channels.length) channels = defaultChannels(4);
+          }
+          var mod = {
+            type: preset.type,
+            id: id,
+            width: preset.width || 'full',
+            height: preset.height || 200,
+            channels: channels,
+            yGroups: null,
+            yScales: null,
+            chart: null,
+          };
+          modules.push(mod);
+          createModuleDOM(mod);
+          buildModuleContent(mod);
+        });
+      }
+      updateAddBtnVisibility();
+    }
+
+    _loadLayoutFromServer(_applyLayout);
+
+    /* ---- Template API (exposed to global scope) ---- */
+    window._dashGetLayout = function () {
+      return modules.map(function (m) {
+        var o = { type: m.type, width: m.width, height: m.height };
+        if (m.channels) o.channels = m.channels.slice();
+        if (m.yGroups) o.yGroups = m.yGroups;
+        if (m.yScales) o.yScales = m.yScales;
+        if (m.smoothLevel) o.smoothLevel = m.smoothLevel;
+        if (m.showZeroLine) o.showZeroLine = m.showZeroLine;
+        return o;
+      });
+    };
+
+    window._dashApplyLayout = function (state) {
+      modules.forEach(function (m) {
+        if (m.chart) m.chart.destroy();
+        destroyMapInstance(m);
+        var el = document.getElementById('module-' + m.id);
+        if (el) el.remove();
+      });
+      modules.length = 0;
+      state.forEach(function (s) {
         var id = 'mod' + (nextModId++);
-        var si = s.sessionIdx != null ? s.sessionIdx : (isCompare ? 0 : undefined);
+        var channels = null;
+        if (s.type === 'chart' && s.channels) {
+          channels = s.channels.filter(function (n) { return channelExists(n); });
+          if (!channels.length) channels = defaultChannels(4);
+        }
         var mod = {
           type: s.type || 'chart',
           id: id,
           width: s.width || 'full',
           height: s.height || 200,
-          channels: s.channels || null,
-          sessionIdx: si,
+          channels: channels,
+          sessionIdx: isCompare ? 0 : undefined,
           yGroups: s.yGroups || null,
           yScales: s.yScales || null,
           smoothLevel: s.smoothLevel || 0,
-          chart: null,
-        };
-        if (mod.type === 'chart' && mod.channels) {
-          if (isCompare && mod.sessionIdx != null) {
-            mod.channels = mod.channels.filter(function (n) { return channelExistsInSession(n, mod.sessionIdx); });
-          } else {
-            mod.channels = mod.channels.filter(function (n) { return channelExists(n); });
-          }
-        }
-        modules.push(mod);
-        createModuleDOM(mod);
-        buildModuleContent(mod);
-      });
-    } else if (isCompare) {
-      compareSessions.forEach(function (sess, si) {
-        var channels = defaultCompareChannels(si);
-        var mod = {
-          type: 'chart',
-          id: 'mod' + (nextModId++),
-          width: 'full',
-          height: 220,
-          channels: channels,
-          sessionIdx: si,
-          yGroups: null,
-          yScales: null,
+          showZeroLine: s.showZeroLine || null,
           chart: null,
         };
         modules.push(mod);
         createModuleDOM(mod);
         buildModuleContent(mod);
       });
-      var readoutMod = {
-        type: 'readout', id: 'mod' + (nextModId++),
-        width: 'half', height: 300, channels: null, chart: null,
-      };
-      modules.push(readoutMod);
-      createModuleDOM(readoutMod);
-      buildModuleContent(readoutMod);
-    } else {
-      DEFAULT_LAYOUT.forEach(function (preset) {
-        var id = 'mod' + (nextModId++);
-        var channels = null;
-        if (preset.type === 'chart' && preset.channels) {
-          channels = preset.channels.filter(function (n) { return channelExists(n); });
-          if (!channels.length) channels = defaultChannels(4);
-        }
-        var mod = {
-          type: preset.type,
-          id: id,
-          width: preset.width || 'full',
-          height: preset.height || 200,
-          channels: channels,
-          yGroups: null,
-          yScales: null,
-          chart: null,
-        };
-        modules.push(mod);
-        createModuleDOM(mod);
-        buildModuleContent(mod);
-      });
-    }
-    updateAddBtnVisibility();
+      updateAddBtnVisibility();
+      saveLayout();
+    };
   }
 
   window.initDashboard = initDashboard;

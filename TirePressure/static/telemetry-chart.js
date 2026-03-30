@@ -44,6 +44,9 @@
     var target = cfg.target;
     var onHover = typeof cfg.onHover === 'function' ? cfg.onHover : null;
     var onZoom = typeof cfg.onZoom === 'function' ? cfg.onZoom : null;
+    var onBoundaryDrag = typeof cfg.onBoundaryDrag === 'function' ? cfg.onBoundaryDrag : null;
+    var showZeroLine = cfg.showZeroLine || false;
+    var BOUNDARY_HIT_PX = 6;
     var xCursorField = inferXCursorField(xLabel, cfg.xCursorField);
     var lapRelativeX = !!cfg.lapRelativeX;
 
@@ -141,6 +144,23 @@
           });
           ctx.restore();
         },
+        afterDraw: function (ch) {
+          if (!_dragState || _dragState.currentVal == null) return;
+          var ctx = ch.ctx;
+          var xa = ch.chartArea;
+          var xScale = ch.scales.x;
+          var px = xScale.getPixelForValue(_dragState.currentVal);
+          if (px < xa.left || px > xa.right) return;
+          ctx.save();
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          ctx.moveTo(px, xa.top);
+          ctx.lineTo(px, xa.bottom);
+          ctx.stroke();
+          ctx.restore();
+        },
       },
       {
         id: pid + '_lapLines',
@@ -188,6 +208,38 @@
           ctx.moveTo(x, top);
           ctx.lineTo(x, bottom);
           ctx.stroke();
+          ctx.restore();
+        },
+      },
+      {
+        id: pid + '_zeroLine',
+        beforeDatasetsDraw: function (ch) {
+          if (!showZeroLine) return;
+          var isObj = typeof showZeroLine === 'object';
+          var ctx = ch.ctx;
+          var xa = ch.chartArea;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          var drawn = {};
+          Object.keys(ch.scales).forEach(function (sid) {
+            if (sid === 'x') return;
+            var gi = sid === 'y' ? '0' : sid.replace('y_g', '');
+            if (isObj && !showZeroLine[gi]) return;
+            var scale = ch.scales[sid];
+            if (scale.min > 0 || scale.max < 0) return;
+            var y = scale.getPixelForValue(0);
+            var key = Math.round(y);
+            if (drawn[key]) return;
+            drawn[key] = true;
+            if (y >= xa.top && y <= xa.bottom) {
+              ctx.beginPath();
+              ctx.moveTo(xa.left, y);
+              ctx.lineTo(xa.right, y);
+              ctx.stroke();
+            }
+          });
           ctx.restore();
         },
       },
@@ -327,22 +379,93 @@
       onZoom({ min: scale.min, max: scale.max });
     }
 
-    function onMouseMove(e) {
-      var rect = canvas.getBoundingClientRect();
-      var px = e.clientX - rect.left;
-      var xVal = chart.scales.x.getValueForPixel(px);
-      var curMin = chart.scales.x.min;
-      var curMax = chart.scales.x.max;
-      if (xVal == null || !isFinite(xVal) || xVal < curMin || xVal > curMax) return;
-      if (onHover) onHover(xVal);
-    }
-
     function onMouseLeave() {
       window.CursorSync.clear();
     }
 
+    /* ---- Section boundary drag ---- */
+    var _dragState = null;
+
+    function _findBoundaryAtPx(px) {
+      if (!onBoundaryDrag || !sections.length || !chart) return null;
+      var xScale = chart.scales.x;
+      var xa = chart.chartArea;
+      if (!xScale || !xa) return null;
+      for (var i = 0; i < sections.length; i++) {
+        var sec = sections[i];
+        var startPx = xScale.getPixelForValue(sec.start);
+        var endPx = xScale.getPixelForValue(sec.end);
+        if (Math.abs(px - endPx) <= BOUNDARY_HIT_PX && endPx >= xa.left && endPx <= xa.right) {
+          return { secIdx: i, field: 'end', px: endPx };
+        }
+        if (Math.abs(px - startPx) <= BOUNDARY_HIT_PX && startPx >= xa.left && startPx <= xa.right) {
+          return { secIdx: i, field: 'start', px: startPx };
+        }
+      }
+      return null;
+    }
+
+    function onMouseMove(e) {
+      var rect = canvas.getBoundingClientRect();
+      var px = e.clientX - rect.left;
+
+      if (_dragState) {
+        var xVal = chart.scales.x.getValueForPixel(px);
+        if (xVal != null && isFinite(xVal)) {
+          xVal = Math.max(xMin, Math.min(xMax, xVal));
+          _dragState.currentVal = xVal;
+          chart.update('none');
+        }
+        return;
+      }
+
+      if (onBoundaryDrag) {
+        var hit = _findBoundaryAtPx(px);
+        canvas.style.cursor = hit ? 'col-resize' : '';
+      }
+
+      var xVal2 = chart.scales.x.getValueForPixel(px);
+      var curMin = chart.scales.x.min;
+      var curMax = chart.scales.x.max;
+      if (xVal2 == null || !isFinite(xVal2) || xVal2 < curMin || xVal2 > curMax) return;
+      if (onHover) onHover(xVal2);
+    }
+
+    function _setPanEnabled(enabled) {
+      if (!chart.options.plugins.zoom || !chart.options.plugins.zoom.pan) return;
+      chart.options.plugins.zoom.pan.enabled = enabled;
+    }
+
+    function onMouseDown(e) {
+      if (!onBoundaryDrag) return;
+      var rect = canvas.getBoundingClientRect();
+      var px = e.clientX - rect.left;
+      var hit = _findBoundaryAtPx(px);
+      if (!hit) return;
+      e.preventDefault();
+      e.stopPropagation();
+      _dragState = { secIdx: hit.secIdx, field: hit.field, currentVal: null };
+      _setPanEnabled(false);
+      canvas.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    function onMouseUp(e) {
+      if (!_dragState) return;
+      var ds = _dragState;
+      _dragState = null;
+      _setPanEnabled(true);
+      canvas.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (ds.currentVal != null) {
+        onBoundaryDrag(ds.secIdx, ds.field, Math.round(ds.currentVal));
+      }
+    }
+
     canvas.addEventListener('mousemove', onMouseMove);
     canvas.addEventListener('mouseleave', onMouseLeave);
+    canvas.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('mouseup', onMouseUp);
 
     canvas.addEventListener('dblclick', function () {
       setXRange(xMin, xMax);
@@ -365,6 +488,8 @@
       window.CursorSync.unsubscribe(syncHandler);
       canvas.removeEventListener('mousemove', onMouseMove);
       canvas.removeEventListener('mouseleave', onMouseLeave);
+      canvas.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('mouseup', onMouseUp);
       origDestroy();
     };
 

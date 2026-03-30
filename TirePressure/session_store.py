@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import sqlite3
 import uuid
@@ -11,8 +12,8 @@ from typing import Any
 from .models import CarDriver, SavedComparison, Session, SessionType, TireSet, TrackLayout, TrackSection, Weekend
 
 
-def _default_db_path() -> Path:
-    return Path(__file__).resolve().parent / "data" / "race_data.db"
+def _default_data_root() -> Path:
+    return Path(__file__).resolve().parent / "data"
 
 
 def _ensure_dir(path: Path) -> None:
@@ -27,11 +28,30 @@ def _migrate_old_db(db_path: Path) -> None:
 
 
 class SessionStore:
-    def __init__(self, db_path: str | Path | None = None):
-        self.db_path = Path(db_path) if db_path else _default_db_path()
+    def __init__(self, db_path: str | Path | None = None, *, data_root: Path | None = None):
+        if data_root is not None:
+            self.data_root = Path(data_root)
+            self.db_path = self.data_root / "race_data.db"
+        elif db_path is not None:
+            self.db_path = Path(db_path)
+            self.data_root = self.db_path.parent
+        else:
+            self.data_root = _default_data_root()
+            self.db_path = self.data_root / "race_data.db"
+        self.uploads_dir = self.data_root / "uploads"
         _ensure_dir(self.db_path)
+        self.uploads_dir.mkdir(parents=True, exist_ok=True)
         _migrate_old_db(self.db_path)
         self._init_schema()
+
+    def resolve_file_path(self, file_path: str | None) -> Path | None:
+        """Resolve a file_path (relative or legacy absolute) to an absolute Path."""
+        if not file_path:
+            return None
+        p = Path(file_path)
+        if p.is_absolute():
+            return p
+        return self.data_root / file_path
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self.db_path))
@@ -106,6 +126,12 @@ class SessionStore:
                     reference_lap_json TEXT NOT NULL,
                     created_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS dashboard_templates (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    layout_json TEXT NOT NULL,
+                    created_at TEXT
+                );
             """)
             self._migrate()
 
@@ -124,12 +150,37 @@ class SessionStore:
             if "track_layout_id" not in cols:
                 c.execute("ALTER TABLE sessions ADD COLUMN track_layout_id TEXT")
 
+            if "dashboard_layout_json" not in cols:
+                c.execute("ALTER TABLE sessions ADD COLUMN dashboard_layout_json TEXT")
+
+            sc_cols = {
+                row[1]
+                for row in c.execute("PRAGMA table_info(saved_comparisons)").fetchall()
+            }
+            if sc_cols and "dashboard_layout_json" not in sc_cols:
+                c.execute("ALTER TABLE saved_comparisons ADD COLUMN dashboard_layout_json TEXT")
+
             ts_cols = {
                 row[1]
                 for row in c.execute("PRAGMA table_info(track_sections)").fetchall()
             }
             if ts_cols and "corner_group" not in ts_cols:
                 c.execute("ALTER TABLE track_sections ADD COLUMN corner_group INTEGER")
+
+            # Migrate file_path from absolute to relative (for portability / sync)
+            abs_rows = c.execute(
+                "SELECT id, file_path FROM sessions WHERE file_path IS NOT NULL"
+            ).fetchall()
+            for row_id, fp in abs_rows:
+                if fp and Path(fp).is_absolute():
+                    try:
+                        rel = Path(fp).relative_to(self.data_root)
+                        c.execute(
+                            "UPDATE sessions SET file_path = ? WHERE id = ?",
+                            (rel.as_posix(), row_id),
+                        )
+                    except ValueError:
+                        pass
 
             # Migrate track_layouts: old schema had track_name as PK, new has id PK
             tl_cols = {
@@ -631,3 +682,91 @@ class SessionStore:
         return self.add_track_layout(track_name, key, reference_lap,
                                      source_session_id=source_session_id,
                                      source_lap_index=source_lap_index)
+
+    # ---------- Dashboard Templates ----------
+
+    def add_dashboard_template(self, name: str, layout: list[dict]) -> dict:
+        tid = str(uuid.uuid4())
+        now = datetime.datetime.utcnow().isoformat()
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO dashboard_templates (id, name, layout_json, created_at) VALUES (?, ?, ?, ?)",
+                (tid, name, json.dumps(layout), now),
+            )
+        return {"id": tid, "name": name, "layout": layout, "created_at": now}
+
+    def list_dashboard_templates(self) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute("SELECT id, name, layout_json, created_at FROM dashboard_templates ORDER BY created_at DESC").fetchall()
+        out = []
+        for r in rows:
+            try:
+                layout = json.loads(r[2])
+            except (json.JSONDecodeError, TypeError):
+                layout = []
+            out.append({"id": r[0], "name": r[1], "layout": layout, "created_at": r[3]})
+        return out
+
+    def get_dashboard_template(self, tid: str) -> dict | None:
+        with self._conn() as c:
+            row = c.execute("SELECT id, name, layout_json, created_at FROM dashboard_templates WHERE id = ?", (tid,)).fetchone()
+        if not row:
+            return None
+        try:
+            layout = json.loads(row[2])
+        except (json.JSONDecodeError, TypeError):
+            layout = []
+        return {"id": row[0], "name": row[1], "layout": layout, "created_at": row[3]}
+
+    def update_dashboard_template(self, tid: str, name: str | None = None, layout: list[dict] | None = None) -> None:
+        with self._conn() as c:
+            if name is not None:
+                c.execute("UPDATE dashboard_templates SET name = ? WHERE id = ?", (name, tid))
+            if layout is not None:
+                c.execute("UPDATE dashboard_templates SET layout_json = ? WHERE id = ?", (json.dumps(layout), tid))
+
+    def delete_dashboard_template(self, tid: str) -> None:
+        with self._conn() as c:
+            c.execute("DELETE FROM dashboard_templates WHERE id = ?", (tid,))
+
+    # ---------- Per-session / per-comparison dashboard layouts ----------
+
+    def get_dashboard_layout(self, session_id: str) -> list[dict] | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT dashboard_layout_json FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def save_dashboard_layout(self, session_id: str, layout: list[dict]) -> None:
+        with self._conn() as c:
+            c.execute(
+                "UPDATE sessions SET dashboard_layout_json = ? WHERE id = ?",
+                (json.dumps(layout), session_id),
+            )
+
+    def get_compare_dashboard_layout(self, comparison_id: str) -> list[dict] | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT dashboard_layout_json FROM saved_comparisons WHERE id = ?",
+                (comparison_id,),
+            ).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def save_compare_dashboard_layout(self, comparison_id: str, layout: list[dict]) -> None:
+        with self._conn() as c:
+            c.execute(
+                "UPDATE saved_comparisons SET dashboard_layout_json = ? WHERE id = ?",
+                (json.dumps(layout), comparison_id),
+            )

@@ -53,6 +53,25 @@
     </nav>
 
     <div class="sb-footer">
+      {% if current_user %}
+      <div class="sb-user">
+        {% if current_user.picture %}
+        <img class="sb-user-avatar" src="{{ current_user.picture }}" alt="" referrerpolicy="no-referrer">
+        {% else %}
+        <svg class="sb-user-avatar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        {% endif %}
+        <span class="sb-label sb-user-name">{{ current_user.name or current_user.email }}</span>
+      </div>
+      <a href="{{ url_for('auth.logout') }}" class="sb-link sb-signout">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        <span class="sb-label">Sign out</span>
+      </a>
+      {% elif oauth_enabled %}
+      <a href="{{ url_for('auth.login') }}" class="sb-link sb-signin">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>
+        <span class="sb-label">Sign in</span>
+      </a>
+      {% endif %}
       <button class="sb-collapse-btn" id="sb-toggle" title="Collapse sidebar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
         <span class="sb-label">Collapse</span>
@@ -61,6 +80,17 @@
   </aside>
 
   <main class="main-content" id="main-content">
+    <div id="bg-upload-bar" class="bg-upload-bar" style="display:none;">
+      <div class="bg-upload-inner">
+        <span class="bg-upload-label" id="bg-upload-label">Processing…</span>
+        <div class="bg-upload-track">
+          <div class="bg-upload-fill" id="bg-upload-fill" style="width:0%"></div>
+        </div>
+        <span class="bg-upload-pct" id="bg-upload-pct">0%</span>
+        <a class="bg-upload-link" id="bg-upload-link" href="#" style="display:none;">View</a>
+        <button class="bg-upload-dismiss" id="bg-upload-dismiss" title="Dismiss" style="display:none;">&times;</button>
+      </div>
+    </div>
     <div class="{{ 'container-full' if full_width is defined and full_width else 'container' }}">
       {% block content %}{% endblock %}
     </div>
@@ -78,6 +108,96 @@
       sidebar.classList.toggle('collapsed');
       localStorage.setItem(KEY, sidebar.classList.contains('collapsed') ? '1' : '0');
     });
+  })();
+  </script>
+  <script>
+  (function() {
+    var KEY = 'bg_upload_tasks';
+    var bar = document.getElementById('bg-upload-bar');
+    var label = document.getElementById('bg-upload-label');
+    var fill = document.getElementById('bg-upload-fill');
+    var pctEl = document.getElementById('bg-upload-pct');
+    var link = document.getElementById('bg-upload-link');
+    var dismiss = document.getElementById('bg-upload-dismiss');
+    var polling = false;
+    var pollTimer = null;
+
+    function getTasks() {
+      try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) { return {}; }
+    }
+    function setTasks(obj) { localStorage.setItem(KEY, JSON.stringify(obj)); }
+
+    window._bgUploadRegister = function(taskId, taskLabel) {
+      var tasks = getTasks();
+      tasks[taskId] = { label: taskLabel || 'Upload', pct: 0, done: false, redirect: null, error: null };
+      setTasks(tasks);
+      startPolling();
+    };
+
+    function renderBar() {
+      var tasks = getTasks();
+      var ids = Object.keys(tasks);
+      if (!ids.length) { bar.style.display = 'none'; return; }
+      bar.style.display = '';
+      var active = ids.find(function(id) { return !tasks[id].done; });
+      var t = active ? tasks[active] : tasks[ids[ids.length - 1]];
+      var tid = active || ids[ids.length - 1];
+      label.textContent = (t.label || 'Upload') + (t.error ? ' — Error: ' + t.error : t.done ? ' — Complete' : '');
+      fill.style.width = t.pct + '%';
+      fill.className = 'bg-upload-fill' + (t.error ? ' bg-error' : t.done ? ' bg-done' : '');
+      pctEl.textContent = t.pct + '%';
+      if (t.done && t.redirect && !t.error) {
+        link.href = t.redirect;
+        link.style.display = '';
+      } else {
+        link.style.display = 'none';
+      }
+      dismiss.style.display = t.done ? '' : 'none';
+      dismiss.onclick = function() {
+        var tasks2 = getTasks();
+        delete tasks2[tid];
+        setTasks(tasks2);
+        renderBar();
+      };
+    }
+
+    function poll() {
+      var tasks = getTasks();
+      var ids = Object.keys(tasks).filter(function(id) { return !tasks[id].done; });
+      if (!ids.length) { polling = false; renderBar(); return; }
+      var promises = ids.map(function(id) {
+        return fetch('/api/upload-status/' + id).then(function(r) { return r.json().then(function(d) { return { id: id, data: d }; }); })
+          .catch(function() { return null; });
+      });
+      Promise.all(promises).then(function(results) {
+        var tasks2 = getTasks();
+        results.forEach(function(r) {
+          if (!r || r.data.error === 'Unknown task') return;
+          var d = r.data;
+          tasks2[r.id] = { label: d.label || tasks2[r.id].label, pct: d.pct, done: d.done, redirect: d.redirect, error: d.error };
+        });
+        setTasks(tasks2);
+        renderBar();
+        var stillActive = Object.keys(tasks2).some(function(id) { return !tasks2[id].done; });
+        if (stillActive) {
+          pollTimer = setTimeout(poll, 800);
+        } else {
+          polling = false;
+        }
+      });
+    }
+
+    function startPolling() {
+      renderBar();
+      if (!polling) { polling = true; poll(); }
+    }
+
+    var initTasks = getTasks();
+    if (Object.keys(initTasks).some(function(id) { return !initTasks[id].done; })) {
+      startPolling();
+    } else if (Object.keys(initTasks).length) {
+      renderBar();
+    }
   })();
   </script>
   {% block scripts %}{% endblock %}

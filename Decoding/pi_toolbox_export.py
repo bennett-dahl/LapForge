@@ -62,6 +62,25 @@ def parse_outing_information(lines: list[str]) -> dict[str, str]:
     return result
 
 
+def read_file_metadata(path: str | Path) -> dict[str, str]:
+    """Read only the {OutingInformation} header from a file (fast, no data parsing)."""
+    path = Path(path)
+    lines: list[str] = []
+    outing_start: int | None = None
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for i, line in enumerate(f):
+            lines.append(line)
+            if "{OutingInformation}" in line:
+                outing_start = i + 1
+            if "{ChannelBlock}" in line:
+                break
+            if i > 50:
+                break
+    if outing_start is None:
+        return {}
+    return parse_outing_information(lines[outing_start:])
+
+
 def parse_channel_block(
     header_line: str,
     data_lines: list[str],

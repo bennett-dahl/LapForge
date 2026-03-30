@@ -7,14 +7,14 @@
 
 {% else %}
   <h1>{{ session.track }} — {{ session.session_type.value }}</h1>
-  {% if car_driver %}<p>Car/Driver: {{ car_driver.display_name() }}</p>{% endif %}
-  <p>{{ session.driver }} / {{ session.car }}</p>
+  {% if car_driver %}<p class="muted" style="font-size:0.9rem;">{{ car_driver.display_name() }}{% if session.driver %} &middot; {{ session.driver }}{% endif %}{% if session.car %} &middot; {{ session.car }}{% endif %}</p>{% endif %}
 
   <div class="unit-toggle" style="display:flex;flex-wrap:wrap;gap:1.5rem;align-items:center;margin-bottom:0.5rem;">
     <span>Pressure: <a href="{{ url_for('session_detail', id=session.id, unit='psi', temp_unit='f' if use_fahrenheit else 'c', tool=active_tool) }}" {% if use_psi %}class="active"{% endif %}>PSI</a> <a href="{{ url_for('session_detail', id=session.id, unit='bar', temp_unit='f' if use_fahrenheit else 'c', tool=active_tool) }}" {% if not use_psi %}class="active"{% endif %}>Bar</a></span>
     <span>Temp: <a href="{{ url_for('session_detail', id=session.id, unit='psi' if use_psi else 'bar', temp_unit='c', tool=active_tool) }}" {% if not use_fahrenheit %}class="active"{% endif %}>°C</a> <a href="{{ url_for('session_detail', id=session.id, unit='psi' if use_psi else 'bar', temp_unit='f', tool=active_tool) }}" {% if use_fahrenheit %}class="active"{% endif %}>°F</a></span>
   </div>
 
+  {% include "partials/session_info.html" %}
   {% include "partials/session_settings.html" %}
 
   {% if needs_reprocess %}
@@ -351,6 +351,11 @@
       });
     }
 
+    /* ---- Chart Y-axis state ---- */
+    var secYGroups = null;
+    var secYScales = null;
+    var secShowZeroLine = null;
+
     /* ---- Chart setup ---- */
     var secChart = null;
     function buildChart() {
@@ -370,16 +375,27 @@
         return { start: sec.start_distance, end: sec.end_distance, color: bandColor(colorForSection(sec, i)) };
       });
 
+      var effectiveGroups = secYGroups;
+      if (!effectiveGroups && chData.length > 1) {
+        effectiveGroups = {};
+        chData.forEach(function(c, i) { effectiveGroups[c.name] = i; });
+      }
+
       secChart = createTelemetryChart(canvas, {
         channels: chData,
         xValues: chartDists,
         xLabel: 'Distance (m)',
         sections: sectionBands,
-        yGroups: chData.length > 1 ? (function() {
-          var g = {}; chData.forEach(function(c, i) { g[c.name] = i; }); return g;
-        })() : null,
+        yGroups: effectiveGroups,
+        yScales: secYScales,
+        showZeroLine: secShowZeroLine,
         onHover: function(x) {
           CursorSync.set({ distance: x });
+        },
+        onBoundaryDrag: function(secIdx, field, newVal) {
+          newVal = Math.max(0, Math.min(maxDist, newVal));
+          linkBoundary(secIdx, field === 'start' ? 'start_distance' : 'end_distance', newVal);
+          refresh();
         },
       });
     }
@@ -430,6 +446,222 @@
     document.getElementById('sec-ch-cancel').addEventListener('click', function() { chOverlay.style.display = 'none'; });
     document.getElementById('sec-ch-close').addEventListener('click', function() { chOverlay.style.display = 'none'; });
     chOverlay.addEventListener('click', function(e) { if (e.target === chOverlay) chOverlay.style.display = 'none'; });
+
+    /* ---- Y-Axis groups modal ---- */
+    var SEC_GROUP_LABELS = ['A', 'B', 'C', 'D'];
+    var SEC_GROUP_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b'];
+    var yAxisOverlay = document.getElementById('sec-yaxis-overlay');
+    var yAxisBody = document.getElementById('sec-yaxis-body');
+    var yGroupTemp = {};
+    var yScaleTemp = {};
+    var yZeroTemp = {};
+
+    function _secActiveGroups() {
+      var seen = {};
+      for (var ch in yGroupTemp) seen[yGroupTemp[ch]] = true;
+      var list = [];
+      SEC_GROUP_LABELS.forEach(function(_, gi) { if (seen[gi]) list.push(gi); });
+      return list;
+    }
+
+    function _secCreateScaleRow(label, groupIdx, color, container) {
+      var existing = yScaleTemp[groupIdx] || {};
+      var row = document.createElement('div');
+      row.className = 'yscale-row';
+
+      var lbl = document.createElement('span');
+      lbl.className = 'yscale-label';
+      lbl.style.color = color;
+      lbl.textContent = label;
+      row.appendChild(lbl);
+
+      var inputs = document.createElement('div');
+      inputs.className = 'yscale-inputs';
+
+      var minInput = document.createElement('input');
+      minInput.type = 'number';
+      minInput.className = 'yscale-input';
+      minInput.placeholder = 'Auto';
+      minInput.title = 'Min';
+      if (existing.min != null && existing.min !== '') minInput.value = existing.min;
+      minInput.addEventListener('input', function() {
+        if (!yScaleTemp[groupIdx]) yScaleTemp[groupIdx] = {};
+        var v = parseFloat(minInput.value);
+        yScaleTemp[groupIdx].min = isNaN(v) ? null : v;
+      });
+
+      var sep = document.createElement('span');
+      sep.textContent = '–';
+      sep.style.cssText = 'opacity:0.4;margin:0 0.2rem;';
+
+      var maxInput = document.createElement('input');
+      maxInput.type = 'number';
+      maxInput.className = 'yscale-input';
+      maxInput.placeholder = 'Auto';
+      maxInput.title = 'Max';
+      if (existing.max != null && existing.max !== '') maxInput.value = existing.max;
+      maxInput.addEventListener('input', function() {
+        if (!yScaleTemp[groupIdx]) yScaleTemp[groupIdx] = {};
+        var v = parseFloat(maxInput.value);
+        yScaleTemp[groupIdx].max = isNaN(v) ? null : v;
+      });
+
+      var zeroCb = document.createElement('input');
+      zeroCb.type = 'checkbox';
+      zeroCb.checked = !!yZeroTemp[groupIdx];
+      zeroCb.title = 'Show zero line';
+      zeroCb.addEventListener('change', function() {
+        yZeroTemp[groupIdx] = zeroCb.checked;
+      });
+
+      inputs.appendChild(document.createTextNode('Min '));
+      inputs.appendChild(minInput);
+      inputs.appendChild(sep);
+      inputs.appendChild(document.createTextNode('Max '));
+      inputs.appendChild(maxInput);
+      var zeroLabel = document.createElement('label');
+      zeroLabel.style.cssText = 'display:inline-flex;align-items:center;gap:0.2rem;margin-left:0.5rem;font-size:0.75rem;cursor:pointer;white-space:nowrap;';
+      zeroLabel.appendChild(zeroCb);
+      zeroLabel.appendChild(document.createTextNode('Zero'));
+      inputs.appendChild(zeroLabel);
+      row.appendChild(inputs);
+      return row;
+    }
+
+    function _secRebuildScaleInputs(container) {
+      container.innerHTML = '';
+      var active = _secActiveGroups();
+      var showGrouped = active.length > 1;
+      if (!showGrouped) {
+        container.appendChild(_secCreateScaleRow('All channels', 0, '#aaa', container));
+      } else {
+        active.forEach(function(gi) {
+          container.appendChild(_secCreateScaleRow('Group ' + SEC_GROUP_LABELS[gi], gi, SEC_GROUP_COLORS[gi], container));
+        });
+      }
+    }
+
+    document.getElementById('btn-sec-yaxis').addEventListener('click', function() {
+      yGroupTemp = {};
+      yScaleTemp = {};
+      yZeroTemp = {};
+      var existingGroups = secYGroups || {};
+      var existingScales = secYScales || {};
+      var existingZero = secShowZeroLine || {};
+
+      activeChannels.forEach(function(name, i) {
+        if (existingGroups[name] != null) {
+          yGroupTemp[name] = existingGroups[name];
+        } else {
+          yGroupTemp[name] = i;
+        }
+      });
+      SEC_GROUP_LABELS.forEach(function(_, gi) {
+        if (existingScales[gi]) yScaleTemp[gi] = { min: existingScales[gi].min, max: existingScales[gi].max };
+        if (existingZero[gi]) yZeroTemp[gi] = true;
+      });
+
+      yAxisBody.innerHTML = '';
+
+      var desc = document.createElement('div');
+      desc.style.cssText = 'font-size:0.75rem;color:var(--muted);margin-bottom:0.6rem;';
+      desc.textContent = 'Assign channels to groups. Each group gets its own Y-axis scale.';
+      yAxisBody.appendChild(desc);
+
+      activeChannels.forEach(function(name) {
+        if (!chartSeries[name]) return;
+        var cm = chartMeta[name] || {};
+        var row = document.createElement('div');
+        row.className = 'ygroup-row';
+
+        var label = document.createElement('span');
+        label.className = 'ygroup-label';
+        label.style.color = cm.color || '#888';
+        label.textContent = cm.display || name;
+        row.appendChild(label);
+
+        var btns = document.createElement('div');
+        btns.className = 'ygroup-btns';
+        SEC_GROUP_LABELS.forEach(function(gl, gi) {
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'ygroup-btn' + (yGroupTemp[name] === gi ? ' active' : '');
+          b.textContent = gl;
+          b.style.setProperty('--gc', SEC_GROUP_COLORS[gi]);
+          b.addEventListener('click', function() {
+            yGroupTemp[name] = gi;
+            btns.querySelectorAll('.ygroup-btn').forEach(function(btn, bi) {
+              btn.classList.toggle('active', bi === gi);
+            });
+            _secRebuildScaleInputs(scaleSection);
+          });
+          btns.appendChild(b);
+        });
+        row.appendChild(btns);
+        yAxisBody.appendChild(row);
+      });
+
+      var scaleDivider = document.createElement('div');
+      scaleDivider.style.cssText = 'border-top:1px solid var(--border);margin:0.75rem 0 0.5rem;padding-top:0.5rem;';
+      var scaleTitle = document.createElement('div');
+      scaleTitle.style.cssText = 'font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem;';
+      scaleTitle.textContent = 'Scale limits (leave blank for auto)';
+      scaleDivider.appendChild(scaleTitle);
+      yAxisBody.appendChild(scaleDivider);
+
+      var scaleSection = document.createElement('div');
+      yAxisBody.appendChild(scaleSection);
+      _secRebuildScaleInputs(scaleSection);
+
+      yAxisOverlay.style.display = '';
+    });
+
+    function closeYAxisModal() { yAxisOverlay.style.display = 'none'; }
+
+    document.getElementById('sec-yaxis-apply').addEventListener('click', function() {
+      var groups = {};
+      var hasMultiple = false;
+      for (var ch in yGroupTemp) groups[ch] = yGroupTemp[ch];
+      var vals = Object.keys(groups).map(function(k) { return groups[k]; });
+      for (var i = 1; i < vals.length; i++) { if (vals[i] !== vals[0]) { hasMultiple = true; break; } }
+      secYGroups = hasMultiple ? groups : null;
+
+      var cleanScales = {};
+      var hasAnyScale = false;
+      for (var gi in yScaleTemp) {
+        var s = yScaleTemp[gi];
+        if (s && (s.min != null || s.max != null)) {
+          cleanScales[gi] = {};
+          if (s.min != null) { cleanScales[gi].min = s.min; hasAnyScale = true; }
+          if (s.max != null) { cleanScales[gi].max = s.max; hasAnyScale = true; }
+        }
+      }
+      secYScales = hasAnyScale ? cleanScales : null;
+      var cleanZero = {};
+      var hasAnyZero = false;
+      for (var zi in yZeroTemp) {
+        if (yZeroTemp[zi]) { cleanZero[zi] = true; hasAnyZero = true; }
+      }
+      secShowZeroLine = hasAnyZero ? cleanZero : null;
+
+      var yBtn = document.getElementById('btn-sec-yaxis');
+      if (yBtn) yBtn.classList.toggle('btn-active', !!(secYGroups || secYScales || secShowZeroLine));
+      buildChart();
+      closeYAxisModal();
+    });
+
+    document.getElementById('sec-yaxis-reset').addEventListener('click', function() {
+      secYGroups = null;
+      secYScales = null;
+      secShowZeroLine = null;
+      var yBtn = document.getElementById('btn-sec-yaxis');
+      if (yBtn) yBtn.classList.remove('btn-active');
+      buildChart();
+      closeYAxisModal();
+    });
+
+    document.getElementById('sec-yaxis-close').addEventListener('click', closeYAxisModal);
+    yAxisOverlay.addEventListener('click', function(e) { if (e.target === yAxisOverlay) closeYAxisModal(); });
 
     /* ---- Section type helpers ---- */
     var LETTERS = 'abcdefghijklmnopqrstuvwxyz';

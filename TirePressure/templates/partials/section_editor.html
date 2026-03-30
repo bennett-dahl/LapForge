@@ -41,14 +41,17 @@
   {# Vertical resize handle between top row and chart #}
   <div class="sec-resize-v" id="sec-resize-v" title="Drag to resize"></div>
 
-  {# Row 2: cursor readout + chart full width #}
-  <div class="sec-cursor-readout" id="sec-cursor-readout">Distance: — m</div>
+  {# Row 2: chart with header + canvas #}
   <div class="sec-chart-row" id="sec-chart-row">
+    <div class="dash-module-header">
+      <span class="module-title" id="sec-cursor-readout">Distance: — m</span>
+      <div class="module-actions">
+        <button type="button" class="panel-btn" id="btn-sec-yaxis">Y-Axis</button>
+        <button type="button" class="panel-btn" id="btn-sec-channels">Channels</button>
+      </div>
+    </div>
     <div id="sec-chart-container" class="sec-chart-wrap">
       <canvas id="sec-chart-canvas"></canvas>
-    </div>
-    <div class="sec-chart-toolbar">
-      <button type="button" class="panel-btn" id="btn-sec-channels">Select Channels</button>
     </div>
   </div>
 </div>
@@ -64,6 +67,21 @@
     <div class="modal-footer">
       <button type="button" class="btn" id="sec-ch-apply">Apply</button>
       <button type="button" class="btn btn-secondary" id="sec-ch-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+{# Y-Axis groups modal #}
+<div class="modal-overlay" id="sec-yaxis-overlay" style="display:none;">
+  <div class="modal-dialog" style="width:400px;">
+    <div class="modal-header">
+      <h3>Y-Axis Groups</h3>
+      <button type="button" class="modal-close" id="sec-yaxis-close">&times;</button>
+    </div>
+    <div class="modal-body" id="sec-yaxis-body"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" id="sec-yaxis-reset">Reset all</button>
+      <button type="button" class="btn" id="sec-yaxis-apply">Apply</button>
     </div>
   </div>
 </div>
