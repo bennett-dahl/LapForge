@@ -1,8 +1,7 @@
 ---
-description: Architecture reference for the Race Data Analysis platform. Read before making structural changes, adding tools, channels, or pipeline steps.
+description: Architecture reference for the LapForge platform. Read before making structural changes, adding tools, channels, or pipeline steps.
 globs:
-  - TirePressure/**
-  - Decoding/**
+  - LapForge/**
 ---
 
 # Architecture Reference
@@ -10,39 +9,47 @@ globs:
 ## Project Layout
 
 ```
-RaceDataAnalysis/
-  Decoding/
-    pi_toolbox_export.py         # Pi Toolbox .txt parser (unchanged API)
-  TirePressure/
-    __init__.py                  # exports create_app
-    app.py                       # create_app() factory, all routes, helpers
-    channels.py                  # channel registry: CHANNEL_SIGNATURES, detect_channels()
-    processing.py                # pipeline steps + process_session()
-    session_store.py             # SQLite: sessions, car_drivers, tire_sets, track_sections, saved_comparisons
-    models.py                    # dataclasses: Session, CarDriver, TireSet, TrackSection, etc.
-    blueprints/                  # reserved for future route extraction
-    tools/                       # analysis tool plugins (auto-discovered)
-      __init__.py                # TOOL_REGISTRY, get_available_tools()
-      tire_pressure.py           # always-available pressure chart tool
-      track_map.py               # GPS map (requires lat, lon)
-      channel_chart.py           # multi-channel chart (always available)
-    templates/
-      base.html                  # shared layout, nav, links style.css
-      session_detail.html        # tool sidebar + content area
-      partials/                  # tool-specific template fragments
-        tire_pressure.html
-        track_map.html
-        channel_chart.html
-    static/
-      style.css                  # all shared CSS (extracted from base.html)
-      cursor-sync.js             # CursorSync: shared distance/time state
-      telemetry-chart.js         # createTelemetryChart(): Chart.js wrapper
-      map-widget.js              # createTrackMap(): Leaflet wrapper
+LapForge/
+  __init__.py                  # exports create_app
+  app.py                       # create_app() factory, all routes, helpers
+  channels.py                  # channel registry: CHANNEL_SIGNATURES, detect_channels()
+  processing.py                # pipeline steps + process_session()
+  session_store.py             # SQLite: sessions, car_drivers, tire_sets, track_sections, saved_comparisons
+  models.py                    # dataclasses: Session, CarDriver, TireSet, TrackSection, etc.
+  config.py                    # AppConfig, appdata path helpers
+  parsers/
+    __init__.py
+    pi_toolbox_export.py       # Pi Toolbox .txt parser
+  auth/
+    oauth.py                   # OAuth blueprint, keyring token persistence
+  sync/
+    bundle.py                  # backup bundle creation/restore
+    engine.py                  # sync state machine
+    secrets.py                 # keyring helpers for sync tokens
+    cloud_google.py            # Google Drive client
+  blueprints/                  # reserved for future route extraction
+  tools/                       # analysis tool plugins (auto-discovered)
+    __init__.py                # TOOL_REGISTRY, get_available_tools()
+    tire_pressure.py           # always-available pressure chart tool
+    track_map.py               # GPS map (requires lat, lon)
+    channel_chart.py           # multi-channel chart (always available)
+  templates/
+    base.html                  # shared layout, nav, links style.css
+    session_detail.html        # tool sidebar + content area
+    partials/                  # tool-specific template fragments
+      tire_pressure.html
+      track_map.html
+      channel_chart.html
+  static/
+    style.css                  # all shared CSS (extracted from base.html)
+    cursor-sync.js             # CursorSync: shared distance/time state
+    telemetry-chart.js         # createTelemetryChart(): Chart.js wrapper
+    map-widget.js              # createTrackMap(): Leaflet wrapper
 ```
 
 ## How to Add an Analysis Tool
 
-1. Create `TirePressure/tools/your_tool.py` with the required module-level attributes:
+1. Create `LapForge/tools/your_tool.py` with the required module-level attributes:
    ```python
    TOOL_NAME = "your_tool"            # URL parameter value
    DISPLAY_NAME = "Your Tool"         # sidebar display name
@@ -58,7 +65,7 @@ RaceDataAnalysis/
        return {"has_data": True, ...}
    ```
 
-2. Create `TirePressure/templates/partials/your_tool.html`:
+2. Create `LapForge/templates/partials/your_tool.html`:
    - Access `tool_data` (the dict from `prepare_data`) in the template.
    - Wrap in a `.card` div for consistent styling.
 

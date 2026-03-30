@@ -15,7 +15,13 @@ __pycache__/
 dist/
 build/
 
+# Build environments
+.buildenv/
+
+# Electron
+electron/node_modules/
+electron/dist/
+
 # Local-only data (not in git)
-TirePressure/data/race_data.db
-TirePressure/data/sync_state.json
-Datasets/
+LapForge/data/
+remove/
