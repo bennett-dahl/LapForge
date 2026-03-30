@@ -13,6 +13,7 @@ let backendProcess = null;
 let backendPort = null;
 let lastUpdateStatus = null;
 let autoUpdaterInitialized = false;
+let userInitiatedCheck = false;
 
 // --------------- Auto-updater setup ---------------
 
@@ -39,12 +40,22 @@ function initAutoUpdater() {
 
   autoUpdater.on('update-available', (info) => {
     log(`Updater: update available — v${info.version}`);
+    userInitiatedCheck = false;
     sendUpdateStatus('available', { version: info.version });
   });
 
   autoUpdater.on('update-not-available', (info) => {
     log(`Updater: up to date (current: v${APP_VERSION})`);
     sendUpdateStatus('not-available');
+    if (userInitiatedCheck) {
+      userInitiatedCheck = false;
+      dialog.showMessageBox(mainWindow || null, {
+        type: 'info',
+        title: 'No Updates',
+        message: 'You\'re up to date',
+        detail: `LapForge v${APP_VERSION} is the latest version.`,
+      });
+    }
   });
 
   autoUpdater.on('download-progress', (progress) => {
@@ -55,11 +66,33 @@ function initAutoUpdater() {
   autoUpdater.on('update-downloaded', (info) => {
     log(`Updater: v${info.version} downloaded, ready to install`);
     sendUpdateStatus('ready', { version: info.version });
+    dialog.showMessageBox(mainWindow || null, {
+      type: 'info',
+      title: 'Update Ready',
+      message: `Update v${info.version} is ready to install`,
+      detail: 'LapForge will restart to apply the update.',
+      buttons: ['Restart Now', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then(({ response }) => {
+      if (response === 0) {
+        autoUpdater.quitAndInstall(false, true);
+      }
+    });
   });
 
   autoUpdater.on('error', (err) => {
     log(`Updater error: ${err?.message || err}`);
     sendUpdateStatus('error', { message: err?.message || 'Unknown error' });
+    if (userInitiatedCheck) {
+      userInitiatedCheck = false;
+      dialog.showMessageBox(mainWindow || null, {
+        type: 'error',
+        title: 'Update Error',
+        message: 'Failed to check for updates',
+        detail: err?.message || 'Unknown error',
+      });
+    }
   });
 
   log(`Updater: checking for updates (current: v${APP_VERSION})`);
@@ -81,6 +114,7 @@ ipcMain.on('install-update', () => {
 
 ipcMain.on('check-for-updates', () => {
   if (!IS_DEV && app.isPackaged) {
+    userInitiatedCheck = true;
     autoUpdater.checkForUpdates().catch(() => {});
   }
 });
@@ -134,6 +168,7 @@ function buildAppMenu() {
           label: 'Check for Updates...',
           click: () => {
             if (!IS_DEV && app.isPackaged) {
+              userInitiatedCheck = true;
               autoUpdater.checkForUpdates().catch(() => {});
             } else {
               dialog.showMessageBox(mainWindow, {
