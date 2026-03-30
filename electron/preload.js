@@ -10,4 +10,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   installUpdate: () => ipcRenderer.send('install-update'),
   checkForUpdates: () => ipcRenderer.send('check-for-updates'),
+  requestLastUpdateStatus: () => ipcRenderer.send('get-last-update-status'),
+  showAbout: () => ipcRenderer.send('show-about'),
 });

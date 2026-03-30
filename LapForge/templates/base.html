@@ -235,8 +235,10 @@
 
     document.body.appendChild(bar);
 
-    window.electronAPI.onUpdateStatus(function(data) {
+    function handleUpdate(data) {
       switch (data.status) {
+        case 'checking':
+          break;
         case 'available':
           msg.textContent = 'Downloading update v' + data.version + '...';
           bar.style.display = 'flex';
@@ -244,18 +246,24 @@
           break;
         case 'downloading':
           msg.textContent = 'Downloading update... ' + data.percent + '%';
+          bar.style.display = 'flex';
           break;
         case 'ready':
-          msg.textContent = 'Update v' + data.version + ' ready.';
+          msg.textContent = 'Update v' + data.version + ' ready — restart to apply.';
+          bar.style.display = 'flex';
           btn.style.display = '';
           break;
+        case 'not-available':
         case 'error':
-          bar.style.display = 'none';
-          break;
-        default:
           break;
       }
-    });
+    }
+
+    window.electronAPI.onUpdateStatus(handleUpdate);
+
+    if (window.electronAPI.requestLastUpdateStatus) {
+      window.electronAPI.requestLastUpdateStatus();
+    }
   })();
   </script>
 </body>

@@ -1,54 +1,74 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const net = require('net');
 const { autoUpdater } = require('electron-updater');
 
 const IS_DEV = process.argv.includes('--dev');
+const APP_VERSION = require('./package.json').version;
 
 let mainWindow = null;
 let splashWindow = null;
 let backendProcess = null;
 let backendPort = null;
+let lastUpdateStatus = null;
 
 // --------------- Auto-updater setup ---------------
 
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
 
+function log(msg) {
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] ${msg}`);
+}
+
 function initAutoUpdater() {
-  if (IS_DEV || !app.isPackaged) return;
+  if (IS_DEV || !app.isPackaged) {
+    log('Auto-updater skipped (dev mode)');
+    return;
+  }
 
   autoUpdater.on('checking-for-update', () => {
+    log('Updater: checking for update...');
     sendUpdateStatus('checking');
   });
 
   autoUpdater.on('update-available', (info) => {
+    log(`Updater: update available — v${info.version}`);
     sendUpdateStatus('available', { version: info.version });
   });
 
-  autoUpdater.on('update-not-available', () => {
+  autoUpdater.on('update-not-available', (info) => {
+    log(`Updater: up to date (current: v${APP_VERSION})`);
     sendUpdateStatus('not-available');
   });
 
   autoUpdater.on('download-progress', (progress) => {
+    log(`Updater: downloading ${Math.round(progress.percent)}%`);
     sendUpdateStatus('downloading', { percent: Math.round(progress.percent) });
   });
 
   autoUpdater.on('update-downloaded', (info) => {
+    log(`Updater: v${info.version} downloaded, ready to install`);
     sendUpdateStatus('ready', { version: info.version });
   });
 
   autoUpdater.on('error', (err) => {
+    log(`Updater error: ${err?.message || err}`);
     sendUpdateStatus('error', { message: err?.message || 'Unknown error' });
   });
 
-  autoUpdater.checkForUpdates().catch(() => {});
+  log(`Updater: checking for updates (current: v${APP_VERSION})`);
+  autoUpdater.checkForUpdates().catch((err) => {
+    log(`Updater: checkForUpdates failed — ${err?.message || err}`);
+  });
 }
 
 function sendUpdateStatus(status, data = {}) {
+  lastUpdateStatus = { status, ...data };
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('update-status', { status, ...data });
+    mainWindow.webContents.send('update-status', lastUpdateStatus);
   }
 }
 
@@ -61,6 +81,101 @@ ipcMain.on('check-for-updates', () => {
     autoUpdater.checkForUpdates().catch(() => {});
   }
 });
+
+ipcMain.on('get-last-update-status', () => {
+  if (lastUpdateStatus && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', lastUpdateStatus);
+  }
+});
+
+// --------------- Application menu ---------------
+
+function buildAppMenu() {
+  const template = [
+    {
+      label: 'File',
+      submenu: [
+        { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        ...(IS_DEV ? [{ role: 'toggleDevTools' }] : []),
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Check for Updates...',
+          click: () => {
+            if (!IS_DEV && app.isPackaged) {
+              autoUpdater.checkForUpdates().catch(() => {});
+            } else {
+              dialog.showMessageBox(mainWindow, {
+                type: 'info',
+                title: 'Updates',
+                message: 'Auto-updates are disabled in development mode.',
+              });
+            }
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'About LapForge',
+          click: () => showAboutDialog(),
+        },
+      ],
+    },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function showAboutDialog() {
+  const updateLine = lastUpdateStatus?.status === 'ready'
+    ? `\nUpdate v${lastUpdateStatus.version} ready to install.`
+    : lastUpdateStatus?.status === 'not-available'
+      ? '\nYou are up to date.'
+      : '';
+
+  dialog.showMessageBox(mainWindow || null, {
+    type: 'info',
+    title: 'About LapForge',
+    message: 'LapForge',
+    detail: [
+      `Version: ${APP_VERSION}`,
+      `Electron: ${process.versions.electron}`,
+      `Chrome: ${process.versions.chrome}`,
+      `Node.js: ${process.versions.node}`,
+      `Platform: ${process.platform} ${process.arch}`,
+      updateLine,
+    ].filter(Boolean).join('\n'),
+  });
+}
+
+ipcMain.on('show-about', () => showAboutDialog());
 
 function getBackendPath() {
   if (IS_DEV) return null;
@@ -244,6 +359,8 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    buildAppMenu();
+
     if (IS_DEV) {
       const port = 5000;
       createSplashWindow();
