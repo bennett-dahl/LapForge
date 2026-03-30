@@ -264,7 +264,9 @@ if (!gotLock) {
       const port = await startBackend();
       await waitForServer(port, 20, 500);
       createMainWindow(port);
-      initAutoUpdater();
+      mainWindow.webContents.on('did-finish-load', () => {
+        initAutoUpdater();
+      });
     } catch (err) {
       dialog.showErrorBox('Startup Error', err.message);
       await killBackend();

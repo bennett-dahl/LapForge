@@ -14,6 +14,11 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 block_cipher = None
 project_root = os.path.abspath('.')
 
+# Ensure package metadata (dist-info) is bundled for packages that use importlib.metadata
+metadata_datas = []
+for pkg in ['werkzeug', 'flask', 'jinja2', 'markupsafe', 'click', 'itsdangerous', 'blinker']:
+    metadata_datas += collect_data_files(pkg, include_py_files=False)
+
 # Dynamically-loaded tool modules (importlib in LapForge/tools/__init__.py)
 tools_hiddenimports = collect_submodules('LapForge.tools')
 
@@ -49,7 +54,7 @@ a = Analysis(
     datas=[
         (os.path.join('LapForge', 'templates'), os.path.join('LapForge', 'templates')),
         (os.path.join('LapForge', 'static'), os.path.join('LapForge', 'static')),
-    ],
+    ] + metadata_datas,
     hiddenimports=all_hiddenimports,
     hookspath=[],
     hooksconfig={},

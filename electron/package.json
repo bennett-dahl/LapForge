@@ -1,6 +1,6 @@
 {
   "name": "lapforge",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "LapForge - Telemetry Analysis Tool",
   "main": "main.js",
   "scripts": {
@@ -37,7 +37,8 @@
       {
         "provider": "github",
         "owner": "bennett-dahl",
-        "repo": "LapForge"
+        "repo": "LapForge",
+        "releaseType": "release"
       }
     ],
     "win": {
