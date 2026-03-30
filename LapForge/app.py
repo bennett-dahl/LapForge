@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import socket
 import sys
 import threading
@@ -14,6 +15,8 @@ import traceback
 import uuid
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -548,7 +551,13 @@ def create_app() -> Flask:
                 ):
                     yield f"data: {json.dumps(evt)}\n\n"
             except Exception as e:
-                yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+                log.exception("Sync push failed")
+                msg = str(e)
+                if "HttpError 403" in msg or "insufficientPermissions" in msg:
+                    msg = "Google Drive permission denied. Try signing out and back in."
+                elif "HttpError 401" in msg or "invalid_grant" in msg:
+                    msg = "Google credentials expired. Sign out and back in."
+                yield f"data: {json.dumps({'event': 'error', 'message': msg})}\n\n"
 
         return Response(
             stream_with_context(generate()),
@@ -585,7 +594,15 @@ def create_app() -> Flask:
                     app.store = store  # type: ignore[attr-defined]
                     PREFERENCES_PATH = store.data_root / "preferences.json"
             except Exception as e:
-                yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+                log.exception("Sync pull failed")
+                msg = str(e)
+                if "HttpError 403" in msg or "insufficientPermissions" in msg:
+                    msg = "Google Drive permission denied. Try signing out and back in."
+                elif "HttpError 401" in msg or "invalid_grant" in msg:
+                    msg = "Google credentials expired. Sign out and back in."
+                elif "HttpError 404" in msg:
+                    msg = "Remote backup not found on Google Drive."
+                yield f"data: {json.dumps({'event': 'error', 'message': msg})}\n\n"
 
         return Response(
             stream_with_context(generate()),

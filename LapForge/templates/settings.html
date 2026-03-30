@@ -445,6 +445,7 @@
                 loadFileList();
                 if (action === 'pull') setTimeout(function() { location.reload(); }, 1500);
               } else if (evt.event === 'error') {
+                gotComplete = true;
                 result.textContent = 'Error: ' + (evt.message || 'Sync failed');
                 result.style.color = 'var(--danger, #ef4444)';
               }
