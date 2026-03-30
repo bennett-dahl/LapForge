@@ -30,6 +30,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Inject build defaults
+        run: |
+          echo '{"GOOGLE_CLIENT_ID":"${{ secrets.GOOGLE_CLIENT_ID }}","GOOGLE_CLIENT_SECRET":"${{ secrets.GOOGLE_CLIENT_SECRET }}"}' > LapForge/_build_defaults.json
+        shell: bash
+
       - name: Freeze Python backend
         run: python -m PyInstaller --clean --noconfirm LapForge.spec
 

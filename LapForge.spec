@@ -54,7 +54,10 @@ a = Analysis(
     datas=[
         (os.path.join('LapForge', 'templates'), os.path.join('LapForge', 'templates')),
         (os.path.join('LapForge', 'static'), os.path.join('LapForge', 'static')),
-    ] + metadata_datas,
+    ] + metadata_datas + (
+        [(os.path.join('LapForge', '_build_defaults.json'), 'LapForge')]
+        if os.path.isfile(os.path.join('LapForge', '_build_defaults.json')) else []
+    ),
     hiddenimports=all_hiddenimports,
     hookspath=[],
     hooksconfig={},

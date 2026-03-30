@@ -87,17 +87,27 @@ class AppConfig:
         self._save()
 
     # ---- Google OAuth client config ----
-    # Default credentials for the shipped desktop app (public-client pattern).
-    # Override via env vars or config.json for development / custom deployments.
-    _DEFAULT_GOOGLE_CLIENT_ID = "362442052123-j4kq8tmvhmh0dc61va5inlrusbo3scfe.apps.googleusercontent.com"
-    _DEFAULT_GOOGLE_CLIENT_SECRET = "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"
+    # Resolved in order: env var > config.json > bundled build defaults.
+    # Build defaults are injected by CI from repository secrets into
+    # LapForge/_build_defaults.json (gitignored, bundled by PyInstaller).
+
+    @staticmethod
+    def _build_defaults() -> dict[str, str]:
+        """Load build-time defaults bundled alongside the package."""
+        try:
+            p = Path(__file__).with_name("_build_defaults.json")
+            if p.exists():
+                return json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+        return {}
 
     @property
     def google_client_id(self) -> str | None:
         return (
             os.environ.get("GOOGLE_CLIENT_ID")
             or self._data.get("google_client_id")
-            or self._DEFAULT_GOOGLE_CLIENT_ID
+            or self._build_defaults().get("GOOGLE_CLIENT_ID")
             or None
         )
 
@@ -106,6 +116,6 @@ class AppConfig:
         return (
             os.environ.get("GOOGLE_CLIENT_SECRET")
             or self._data.get("google_client_secret")
-            or self._DEFAULT_GOOGLE_CLIENT_SECRET
+            or self._build_defaults().get("GOOGLE_CLIENT_SECRET")
             or None
         )

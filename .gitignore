@@ -22,6 +22,9 @@ build/
 electron/node_modules/
 electron/dist/
 
+# Build-time secrets (injected by CI, never committed)
+LapForge/_build_defaults.json
+
 # Local-only data (not in git)
 LapForge/data/
 remove/
