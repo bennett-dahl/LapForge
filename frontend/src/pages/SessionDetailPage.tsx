@@ -12,7 +12,6 @@ import Button from '../components/ui/Button';
 import TirePressureChart from '../components/tools/TirePressureChart';
 import SectionEditor from '../components/tools/SectionEditor';
 import SectionMetrics from '../components/tools/SectionMetrics';
-import { zoomRangeForLapNumber } from '../components/dashboard/LapBar';
 import {
   convertTemp,
   distanceAxisTitle,
@@ -265,78 +264,50 @@ export default function SessionDetailPage() {
     if (!dashData?.series || !dashData.has_distance) return null;
 
     const distances = dashData.distances;
-    const splits = dashData.lap_split_distances;
-    const fastIdx = dashData.fast_lap_index;
+    const series = dashData.series;
+    const meta = dashData.channel_meta;
 
-    let startDist = 0;
-    let endDist = distances.length > 0 ? distances[distances.length - 1] : 0;
-    let lapLabel = '';
-
-    if (fastIdx != null && fastIdx >= 0) {
-      const fastLap = dashData.lap_times[fastIdx];
-      if (fastLap) {
-        const range = zoomRangeForLapNumber(splits, dashData.lap_times, fastLap.lap);
-        if (range) {
-          startDist = range.min;
-          endDist = range.max;
-          lapLabel = `Lap ${fastLap.lap} (${fastLap.time.toFixed(2)}s)`;
-        }
-      }
+    // Use all session data directly — no fragile per-lap slicing.
+    // The section editor chart can zoom to the fastest lap via xRange.
+    const validSeries: Record<string, number[]> = {};
+    for (const k of Object.keys(series)) {
+      const arr = series[k];
+      if (Array.isArray(arr) && arr.length > 0) validSeries[k] = arr;
     }
 
-    // Find the index range in the downsampled distances array
-    let iStart = 0;
-    let iEnd = distances.length;
-    for (let i = 0; i < distances.length; i++) {
-      if (distances[i] >= startDist) { iStart = i; break; }
-    }
-    for (let i = distances.length - 1; i >= iStart; i--) {
-      if (distances[i] <= endDist) { iEnd = i + 1; break; }
-    }
+    // Pick default channels (case-insensitive match for preferred keys)
+    const seriesKeys = Object.keys(validSeries);
+    const lowerMap: Record<string, string> = {};
+    for (const k of seriesKeys) lowerMap[k.toLowerCase()] = k;
 
-    // Zero-base the distances so they start from 0 (matching section definitions)
-    const d0 = distances[iStart] ?? 0;
-    const lapDistances = distances.slice(iStart, iEnd).map((d) => d - d0);
-
-    // Build sliced series for all available channels, force-aligned to lapDistances length
-    const expectedLen = lapDistances.length;
-    const slicedSeries: Record<string, number[]> = {};
-    for (const k of Object.keys(dashData.series)) {
-      const arr = dashData.series[k];
-      if (!Array.isArray(arr)) continue;
-      const sliced = arr.slice(iStart, iEnd);
-      slicedSeries[k] = sliced.length === expectedLen
-        ? sliced
-        : sliced.slice(0, expectedLen);
-    }
-
-    // Default channels to show
-    const preferred = ['speed', 'aps', 'pbrake_f'].filter((k) => slicedSeries[k]?.length > 0);
-    const fallback = Object.keys(slicedSeries).filter((k) => slicedSeries[k]?.length > 0).slice(0, 3);
+    const preferredLower = ['speed', 'aps', 'pbrake_f'];
+    const preferred = preferredLower
+      .map((p) => lowerMap[p])
+      .filter((k): k is string => k != null && validSeries[k]?.length > 0);
+    const fallback = seriesKeys.filter((k) => validSeries[k]?.length > 0).slice(0, 3);
     const defaultKeys = preferred.length ? preferred : fallback;
 
-    // Pre-build default channels (proven data flow for initial display)
     const defaultChannels = defaultKeys.map((k) => ({
-      label: dashData.channel_meta[k]?.label ?? k,
-      data: slicedSeries[k],
+      label: (meta[k] as { label?: string; display?: string })?.label
+        ?? (meta[k] as { display?: string })?.display
+        ?? k,
+      data: validSeries[k],
     }));
 
-    // Build channelsByCategory from channel_meta
     const byCat: Record<string, string[]> = {};
-    for (const k of Object.keys(slicedSeries)) {
-      if (!slicedSeries[k]?.length) continue;
-      const cat = dashData.channel_meta[k]?.category ?? 'Other';
+    for (const k of seriesKeys) {
+      if (!validSeries[k]?.length) continue;
+      const cat = meta[k]?.category ?? 'Other';
       (byCat[cat] ??= []).push(k);
     }
 
     return {
-      distances: lapDistances,
-      series: slicedSeries,
+      distances,
+      series: validSeries,
       defaultChannels,
-      channelMeta: dashData.channel_meta,
+      channelMeta: meta,
       channelsByCategory: byCat,
       defaultChannelKeys: defaultKeys,
-      lapLabel,
     };
   }, [dashData]);
 

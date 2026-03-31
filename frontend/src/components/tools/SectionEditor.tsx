@@ -273,7 +273,9 @@ export default function SectionEditor({
         data = data.length > expectedLen ? data.slice(0, expectedLen) : data;
       }
       return {
-        label: channelMeta[k]?.label ?? k,
+        label: (channelMeta[k] as { label?: string; display?: string })?.label
+          ?? (channelMeta[k] as { display?: string })?.display
+          ?? k,
         data,
         yAxisID: yAxisIdForGroupIndex(keyToGroupIndex[k] ?? 0),
         ...(channelColors[k] ? { color: channelColors[k] } : {}),
