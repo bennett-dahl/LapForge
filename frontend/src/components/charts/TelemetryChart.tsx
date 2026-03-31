@@ -233,6 +233,25 @@ export default function TelemetryChart({
     startPx: number;
   } | null>(null);
 
+  const HIT_PX = 8;
+
+  const findBoundaryAtPx = useCallback(
+    (chart: ChartJS, px: number): { secIdx: number; edge: 'start' | 'end' } | null => {
+      const xScale = chart.scales['x'];
+      if (!xScale) return null;
+      const secs = sectionsRef.current;
+      for (let i = 0; i < secs.length; i++) {
+        const s = secs[i];
+        const startPx = xScale.getPixelForValue(s.start);
+        const endPx = xScale.getPixelForValue(s.end);
+        if (Math.abs(px - startPx) <= HIT_PX) return { secIdx: i, edge: 'start' };
+        if (Math.abs(px - endPx) <= HIT_PX) return { secIdx: i, edge: 'end' };
+      }
+      return null;
+    },
+    [],
+  );
+
   const boundaryDragPlugin = useRef<Plugin<'line'>>({
     id: 'sectionBoundaryDrag',
     beforeEvent(chart, args) {
@@ -241,19 +260,6 @@ export default function TelemetryChart({
       const evt = args.event;
       const xScale = chart.scales['x'];
       if (!xScale) return;
-      const secs = sectionsRef.current;
-      const HIT_PX = 8;
-
-      function findBoundary(px: number): { secIdx: number; edge: 'start' | 'end' } | null {
-        for (let i = 0; i < secs.length; i++) {
-          const s = secs[i];
-          const startPx = xScale.getPixelForValue(s.start);
-          const endPx = xScale.getPixelForValue(s.end);
-          if (Math.abs(px - startPx) <= HIT_PX) return { secIdx: i, edge: 'start' };
-          if (Math.abs(px - endPx) <= HIT_PX) return { secIdx: i, edge: 'end' };
-        }
-        return null;
-      }
 
       const x = evt.x ?? 0;
       const drag = dragStateRef.current;
@@ -265,12 +271,12 @@ export default function TelemetryChart({
           args.changed = false;
           return false;
         }
-        const hit = findBoundary(x);
+        const hit = findBoundaryAtPx(chart, x);
         chart.canvas.style.cursor = hit ? 'col-resize' : '';
       }
 
       if (evt.type === 'mousedown') {
-        const hit = findBoundary(x);
+        const hit = findBoundaryAtPx(chart, x);
         if (hit) {
           dragStateRef.current = { active: true, ...hit, startPx: x };
           args.changed = false;
@@ -288,6 +294,60 @@ export default function TelemetryChart({
       }
     },
   }).current;
+
+  // Native pointer listeners to intercept events before Hammer.js (used by chartjs-plugin-zoom)
+  // Hammer.js adds its own DOM listeners, so Chart.js plugin hooks can't block pan.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !onBoundaryDragRef.current) return;
+
+    const onPointerDown = (e: PointerEvent) => {
+      const chart = chartRef.current;
+      if (!chart) return;
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const hit = findBoundaryAtPx(chart, px);
+      if (hit) {
+        dragStateRef.current = { active: true, ...hit, startPx: px };
+        canvas.setPointerCapture(e.pointerId);
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      }
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      const chart = chartRef.current;
+      const drag = dragStateRef.current;
+      if (!chart || !drag?.active) return;
+      const xScale = chart.scales['x'];
+      if (!xScale) return;
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const val = xScale.getValueForPixel(px);
+      if (val != null) onBoundaryDragRef.current?.(drag.secIdx, drag.edge, val);
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (dragStateRef.current?.active) {
+        dragStateRef.current = null;
+        canvas.style.cursor = '';
+        canvas.releasePointerCapture(e.pointerId);
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      }
+    };
+
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    return () => {
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerup', onPointerUp);
+    };
+  }, [findBoundaryAtPx]);
 
   useEffect(() => {
     return store.subscribe(() => {
@@ -441,6 +501,9 @@ export default function TelemetryChart({
         pan: {
           enabled: true,
           mode: 'x',
+          onPanStart: () => {
+            if (dragStateRef.current?.active) return false;
+          },
           onPanComplete: ({ chart }) => {
             syncRangeRef.current?.(chart as ChartJS<'line'>);
             onUserZoomRef.current?.();
