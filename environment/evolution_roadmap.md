@@ -9,9 +9,9 @@
 - **Phase 2b: COMPLETE** -- Brand identity applied (icons, splash, sidebar symbol, favicon, gold accent palette), OAuth credentials extracted from source into CI-injected `_build_defaults.json`
 - **Phase 3: COMPLETE** -- 186 tests (174 unit/integration + 12 Playwright e2e), pytest + pytest-cov, CI pytest step with `--cov-fail-under=50`
 - **Phase 4: COMPLETE** -- SPA Frontend Migration: React + TypeScript + Vite replacing all 21 Jinja2 templates; Flask is now a pure JSON API server
-- **Phase 4b: IN PROGRESS** -- Post-SPA regression bugfix pass (26-item plan executed, additional issues still being identified through user testing)
-- **Current version: v1.6.3** -- published, auto-update pipeline verified end-to-end
-- **Codebase:** 23 Python files (~6,700 lines), Flask routes now API-only, React SPA (frontend/ — ~30 TSX components), SQLite, Google Drive sync, OAuth
+- **Phase 4b: IN PROGRESS** -- Post-SPA regression bugfix pass (26-item plan executed, v1.6.4–v1.6.8 additional fixes from user testing)
+- **Current version: v1.6.8** -- published, auto-update pipeline verified end-to-end
+- **Codebase:** 24 Python files (~6,700 lines), Flask routes now API-only, React SPA (frontend/ — 39 TSX + 5 TS files, ~8,300 lines), SQLite, Google Drive sync, OAuth
 - **Test suite:** 192 tests (rewritten for SPA), 53% overall coverage; core modules: models 100%, channels 100%, config 95%, parser 88%, processing 83%, session_store 86%, bundle 97%
 
 ---
@@ -90,9 +90,17 @@ A 26-item regression bugfix plan was created (3 tiers: Critical, Important, Poli
 - **Layout:** Session detail sidebar replaced with horizontal tab bar. Dashboard modules use fixed-height flex layout with scrollable content and drag-resize.
 - **Restored features:** Sidebar collapse/sign-out, cloud sync UI (tracked files, override warning), data location change, readout styling, session metadata, Y-axis config, channel picker, tire summary, section editor.
 
-**Remaining:** Additional UI polish and minor regressions still being identified through user click testing. Not all edge cases have been fully verified.
+### Post-plan fixes (v1.6.4–v1.6.8):
 
-**Key files:** `frontend/src/components/charts/TelemetryChart.tsx`, `frontend/src/contexts/CursorSyncContext.tsx`, `frontend/src/components/maps/TrackMap.tsx`, `frontend/src/components/dashboard/Dashboard.tsx`, `LapForge/app.py`, `LapForge/static/style.css`
+- **v1.6.4:** Fixed upload redirect (use React Router `navigate()` instead of `window.location.href`), expanded session info panel to display all file metadata including Pi Toolbox `OutingInformation`, fixed Vite proxy for `/upload` endpoint, added `file_metadata` to v2 processed blob.
+- **v1.6.5:** Fixed blank page in production Electron build — dynamic `BrowserRouter` `basename` (dev: `/static/spa`, prod: empty).
+- **v1.6.6:** Fixed track map chart showing no data — removed fragile per-lap distance slicing in `sectionEditorData`, now passes full downsampled session data to `SectionEditor`. Fixed case-insensitive channel matching and `label`/`display` field mismatch.
+- **v1.6.7:** Initial attempt to fix section boundary drag conflicting with chart pan using `beforeEvent` plugin hook (insufficient — Hammer.js bypasses Chart.js plugin events).
+- **v1.6.8:** Proper fix for boundary drag vs pan conflict — native `pointerdown`/`pointermove`/`pointerup` listeners registered before Hammer.js with `stopImmediatePropagation()`, plus `onPanStart` callback safety net. Also added `setPointerCapture()` for reliable drag tracking.
+
+**Remaining:** Additional UI polish and minor regressions still being identified through user click testing.
+
+**Key files:** `frontend/src/components/charts/TelemetryChart.tsx`, `frontend/src/contexts/CursorSyncContext.tsx`, `frontend/src/components/maps/TrackMap.tsx`, `frontend/src/components/dashboard/Dashboard.tsx`, `frontend/src/components/tools/SectionEditor.tsx`, `frontend/src/pages/SessionDetailPage.tsx`, `LapForge/app.py`, `LapForge/processing.py`, `LapForge/static/style.css`
 
 ---
 
@@ -137,6 +145,6 @@ A 26-item regression bugfix plan was created (3 tiers: Critical, Important, Poli
 - Phase 2b: Apply Brand Guide + Secrets Extraction -- **DONE**
 - Phase 3: Comprehensive Testing -- **DONE** (192 tests, 53% coverage)
 - Phase 4: SPA Frontend (React + TypeScript) -- **DONE** (v1.6.0, 192 tests passing)
-- Phase 4b: Post-SPA Bugfix Pass -- **IN PROGRESS** (v1.6.3, 26-item plan executed, additional issues being identified)
+- Phase 4b: Post-SPA Bugfix Pass -- **IN PROGRESS** (v1.6.8, 26-item plan + 5 post-plan fixes)
 - Phase 5: Rust Processing (napi-rs)
 - Phase 6: Node.js Backend + Drop Python
