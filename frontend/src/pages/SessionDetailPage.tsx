@@ -8,13 +8,11 @@ import { CursorSyncProvider } from '../contexts/CursorSyncContext';
 import Dashboard from '../components/dashboard/Dashboard';
 import type { DashboardData } from '../components/dashboard/Dashboard';
 import DashboardTemplateModal from '../components/dashboard/DashboardTemplateModal';
-import ChannelPickerModal from '../components/dashboard/ChannelPickerModal';
-import ChartModule from '../components/dashboard/modules/ChartModule';
 import Button from '../components/ui/Button';
 import TirePressureChart from '../components/tools/TirePressureChart';
-import TrackMap from '../components/maps/TrackMap';
 import SectionEditor from '../components/tools/SectionEditor';
 import SectionMetrics from '../components/tools/SectionMetrics';
+import { zoomRangeForLapNumber } from '../components/dashboard/LapBar';
 import {
   convertTemp,
   distanceAxisTitle,
@@ -52,8 +50,6 @@ type ViewMode =
   | 'dashboard'
   | 'tire-pressure'
   | 'track-map'
-  | 'channel-chart'
-  | 'sections'
   | 'section-metrics'
   | 'info';
 
@@ -61,8 +57,6 @@ const TOOL_NAV: { mode: ViewMode; label: string }[] = [
   { mode: 'dashboard', label: 'Dashboard' },
   { mode: 'tire-pressure', label: 'Tire Pressure' },
   { mode: 'track-map', label: 'Track Map' },
-  { mode: 'channel-chart', label: 'Channel Chart' },
-  { mode: 'sections', label: 'Sections' },
   { mode: 'section-metrics', label: 'Section Metrics' },
   { mode: 'info', label: 'Session Info' },
 ];
@@ -73,9 +67,6 @@ export default function SessionDetailPage() {
   const [view, setView] = useState<ViewMode>('dashboard');
   const [templateOpen, setTemplateOpen] = useState(false);
   const [dashLayout, setDashLayout] = useState<DashboardModule[] | null>(null);
-  const [channelPickerOpen, setChannelPickerOpen] = useState(false);
-  const [pickedChannels, setPickedChannels] = useState<string[]>(['speed', 'aps', 'pbrake_f', 'gear']);
-  const [trackMapHeight, setTrackMapHeight] = useState(560);
 
   const { data: settingsData } = useQuery({
     queryKey: ['settings'],
@@ -236,7 +227,7 @@ export default function SessionDetailPage() {
   const { data: trackSections = [], isLoading: sectionsLoading } = useQuery({
     queryKey: ['track-sections', trackName],
     queryFn: () => apiGet<TrackSection[]>(`/api/sections/${encodeURIComponent(trackName)}`),
-    enabled: !!trackName && (view === 'sections' || view === 'section-metrics'),
+    enabled: !!trackName && (view === 'track-map' || view === 'section-metrics'),
   });
 
   const dashData = data?.dashboard_data as DashboardData | null;
@@ -251,30 +242,12 @@ export default function SessionDetailPage() {
     return storagePressureUnit(meta[k], k);
   }, [dashData?.channel_meta]);
 
-  useEffect(() => {
-    if (!dashData?.series) return;
-    const keys = Object.keys(dashData.series);
-    setPickedChannels((prev) => {
-      const next = prev.filter((k) => keys.includes(k));
-      if (next.length > 0) return next;
-      return keys.slice(0, Math.min(4, keys.length));
-    });
-  }, [dashData]);
 
   const distanceUnit = useMemo((): DistanceUnit => {
     const u = String(settingsData?.preferences?.default_distance_unit ?? 'km').toLowerCase();
     return u === 'mi' ? 'mi' : 'km';
   }, [settingsData?.preferences?.default_distance_unit]);
 
-  useEffect(() => {
-    if (view !== 'track-map') return;
-    function update() {
-      setTrackMapHeight(Math.max(420, window.innerHeight - 200));
-    }
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, [view]);
 
   const xValues = useMemo(
     () => (dashData ? (dashData.has_distance ? dashData.distances : dashData.times) : []),
@@ -286,31 +259,85 @@ export default function SessionDetailPage() {
       : 'Time (s)'
     : '';
   const xCursorField = dashData?.has_distance ? ('distance' as const) : ('time' as const);
-  const lapSplitsForChart = dashData
-    ? dashData.has_distance
-      ? dashData.lap_split_distances
-      : dashData.lap_splits
-    : [];
 
-  const sectionOverlays = useMemo(
-    () =>
-      (dashData?.sections ?? []).map((s) => ({
-        name: s.name,
-        start: s.start_distance,
-        end: s.end_distance,
-      })),
-    [dashData?.sections],
-  );
 
-  const sectionEditorChannels = useMemo(() => {
-    if (!dashData?.series) return [];
-    const preferred = ['speed', 'aps', 'pbrake_f'].filter((k) => dashData.series[k]);
-    const fallback = Object.keys(dashData.series).slice(0, 3);
-    const useKeys = preferred.length ? preferred : fallback;
-    return useKeys.map((k) => ({
+  const sectionEditorData = useMemo(() => {
+    if (!dashData?.series || !dashData.has_distance) return null;
+
+    const distances = dashData.distances;
+    const splits = dashData.lap_split_distances;
+    const fastIdx = dashData.fast_lap_index;
+
+    let startDist = 0;
+    let endDist = distances.length > 0 ? distances[distances.length - 1] : 0;
+    let lapLabel = '';
+
+    if (fastIdx != null && fastIdx >= 0) {
+      const fastLap = dashData.lap_times[fastIdx];
+      if (fastLap) {
+        const range = zoomRangeForLapNumber(splits, dashData.lap_times, fastLap.lap);
+        if (range) {
+          startDist = range.min;
+          endDist = range.max;
+          lapLabel = `Lap ${fastLap.lap} (${fastLap.time.toFixed(2)}s)`;
+        }
+      }
+    }
+
+    // Find the index range in the downsampled distances array
+    let iStart = 0;
+    let iEnd = distances.length;
+    for (let i = 0; i < distances.length; i++) {
+      if (distances[i] >= startDist) { iStart = i; break; }
+    }
+    for (let i = distances.length - 1; i >= iStart; i--) {
+      if (distances[i] <= endDist) { iEnd = i + 1; break; }
+    }
+
+    // Zero-base the distances so they start from 0 (matching section definitions)
+    const d0 = distances[iStart] ?? 0;
+    const lapDistances = distances.slice(iStart, iEnd).map((d) => d - d0);
+
+    // Build sliced series for all available channels, force-aligned to lapDistances length
+    const expectedLen = lapDistances.length;
+    const slicedSeries: Record<string, number[]> = {};
+    for (const k of Object.keys(dashData.series)) {
+      const arr = dashData.series[k];
+      if (!Array.isArray(arr)) continue;
+      const sliced = arr.slice(iStart, iEnd);
+      slicedSeries[k] = sliced.length === expectedLen
+        ? sliced
+        : sliced.slice(0, expectedLen);
+    }
+
+    // Default channels to show
+    const preferred = ['speed', 'aps', 'pbrake_f'].filter((k) => slicedSeries[k]?.length > 0);
+    const fallback = Object.keys(slicedSeries).filter((k) => slicedSeries[k]?.length > 0).slice(0, 3);
+    const defaultKeys = preferred.length ? preferred : fallback;
+
+    // Pre-build default channels (proven data flow for initial display)
+    const defaultChannels = defaultKeys.map((k) => ({
       label: dashData.channel_meta[k]?.label ?? k,
-      data: dashData.series[k],
+      data: slicedSeries[k],
     }));
+
+    // Build channelsByCategory from channel_meta
+    const byCat: Record<string, string[]> = {};
+    for (const k of Object.keys(slicedSeries)) {
+      if (!slicedSeries[k]?.length) continue;
+      const cat = dashData.channel_meta[k]?.category ?? 'Other';
+      (byCat[cat] ??= []).push(k);
+    }
+
+    return {
+      distances: lapDistances,
+      series: slicedSeries,
+      defaultChannels,
+      channelMeta: dashData.channel_meta,
+      channelsByCategory: byCat,
+      defaultChannelKeys: defaultKeys,
+      lapLabel,
+    };
   }, [dashData]);
 
   if (isLoading) {
@@ -352,16 +379,14 @@ export default function SessionDetailPage() {
           </p>
         </div>
         <div className="session-detail-actions">
-          {data.needs_reprocess && data.can_reprocess && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => runReprocess()}
-              disabled={reprocessStream !== null}
-            >
-              Reprocess
-            </Button>
-          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => runReprocess()}
+            disabled={reprocessStream !== null}
+          >
+            Reprocess
+          </Button>
         </div>
       </div>
 
@@ -490,76 +515,30 @@ export default function SessionDetailPage() {
             {view === 'track-map' && (
               <div className="session-tool-map-fill">
                 {dashData?.points && dashData.points.length >= 2 ? (
-                  <TrackMap
-                    points={dashData.points}
-                    sections={sectionOverlays}
-                    lapSplits={lapSplitsForChart}
-                    height={trackMapHeight}
-                  />
+                  <>
+                    {trackName && !sectionsLoading ? (
+                      <SectionEditor
+                        sessionId={id!}
+                        trackName={trackName}
+                        points={dashData.points}
+                        xValues={sectionEditorData?.distances ?? xValues}
+                        xLabel="Distance (m)"
+                        defaultChannels={sectionEditorData?.defaultChannels ?? []}
+                        series={sectionEditorData?.series ?? {}}
+                        channelMeta={sectionEditorData?.channelMeta ?? dashData.channel_meta}
+                        channelsByCategory={sectionEditorData?.channelsByCategory ?? {}}
+                        defaultChannelKeys={sectionEditorData?.defaultChannelKeys ?? []}
+                        sections={trackSections}
+                        onSectionsChange={() => qc.invalidateQueries({ queryKey: ['session-detail', id] })}
+                      />
+                    ) : sectionsLoading ? (
+                      <p className="muted">Loading sections...</p>
+                    ) : (
+                      <p className="muted">No track name for this session.</p>
+                    )}
+                  </>
                 ) : (
                   <p className="muted">No GPS data for this session.</p>
-                )}
-              </div>
-            )}
-
-            {view === 'channel-chart' && (
-              <div className="session-channel-chart-tool card" style={{ padding: '1rem' }}>
-                {!dashData ? (
-                  <p className="muted">No telemetry for this session.</p>
-                ) : (
-                  <>
-                    <div className="chart-toolbar">
-                      <Button variant="secondary" size="sm" onClick={() => setChannelPickerOpen(true)}>
-                        Channels
-                      </Button>
-                    </div>
-                    <div style={{ height: 420 }}>
-                      <ChartModule
-                        xValues={xValues}
-                        xLabel={xLabel}
-                        xCursorField={xCursorField}
-                        series={dashData.series}
-                        channelMeta={dashData.channel_meta}
-                        channelKeys={pickedChannels}
-                        lapSplits={lapSplitsForChart}
-                        sections={dashData.sections}
-                        pressureUnit={pressureUnit}
-                        tempUnit={tempUnit}
-                        distanceUnit={distanceUnit}
-                      />
-                    </div>
-                    <ChannelPickerModal
-                      open={channelPickerOpen}
-                      onClose={() => setChannelPickerOpen(false)}
-                      channelsByCategory={dashData.channels_by_category}
-                      channelMeta={dashData.channel_meta}
-                      selected={pickedChannels}
-                      onApply={setPickedChannels}
-                    />
-                  </>
-                )}
-              </div>
-            )}
-
-            {view === 'sections' && (
-              <div className="card" style={{ padding: '1rem' }}>
-                {!dashData ? (
-                  <p className="muted">No telemetry for this session.</p>
-                ) : !trackName ? (
-                  <p className="muted">No track name for this session.</p>
-                ) : sectionsLoading ? (
-                  <p className="muted">Loading sections...</p>
-                ) : (
-                  <SectionEditor
-                    sessionId={id!}
-                    trackName={trackName}
-                    points={dashData.points ?? []}
-                    xValues={xValues}
-                    xLabel={xLabel}
-                    channels={sectionEditorChannels}
-                    sections={trackSections}
-                    onSectionsChange={() => qc.invalidateQueries({ queryKey: ['session-detail', id] })}
-                  />
                 )}
               </div>
             )}
@@ -614,12 +593,33 @@ function SessionInfoPanel({
     lap_count_notes: String(s.lap_count_notes ?? ''),
   });
 
+  const ss = data.session_summary;
+
   function fmtStoredTemp(cVal: unknown): string {
     if (cVal == null) return '—';
     const v = Number(cVal);
     if (!Number.isFinite(v)) return '—';
     const disp = tempUnit === 'f' ? convertTemp(v, 'c', 'f') : v;
     return `${disp.toFixed(1)}${tempLabel(tempUnit)}`;
+  }
+
+  function fmtDuration(totalSec: number): string {
+    const m = Math.floor(totalSec / 60);
+    const sec = totalSec - m * 60;
+    return m > 0 ? `${m}m ${sec.toFixed(1)}s` : `${sec.toFixed(1)}s`;
+  }
+
+  function fmtRollOut(corner: string, val: unknown) {
+    if (val == null) return null;
+    const v = Number(val);
+    if (!Number.isFinite(v)) return null;
+    const psi = v * 14.5038;
+    return (
+      <div key={corner}>
+        <dt>Roll-out {corner}</dt>
+        <dd>{psi.toFixed(1)} psi</dd>
+      </div>
+    );
   }
 
   function handleSave() {
@@ -653,17 +653,25 @@ function SessionInfoPanel({
           <dd>{String(s.session_type)}</dd>
         </div>
         <div>
-          <dt>Car/Driver</dt>
-          <dd>
-            {data.car_driver
-              ? `${data.car_driver.car_identifier} / ${data.car_driver.driver_name}`
-              : '—'}
-          </dd>
+          <dt>Car</dt>
+          <dd>{data.car_driver?.car_identifier ?? String(s.car || '—')}</dd>
         </div>
         <div>
-          <dt>Tire Set</dt>
-          <dd>{data.tire_set?.name ?? '—'}</dd>
+          <dt>Driver</dt>
+          <dd>{data.car_driver?.driver_name ?? String(s.driver || '—')}</dd>
         </div>
+        {s.outing_number ? (
+          <div>
+            <dt>Outing #</dt>
+            <dd>{String(s.outing_number)}</dd>
+          </div>
+        ) : null}
+        {s.session_number ? (
+          <div>
+            <dt>Session #</dt>
+            <dd>{String(s.session_number)}</dd>
+          </div>
+        ) : null}
 
         {editing ? (
           <>
@@ -750,24 +758,107 @@ function SessionInfoPanel({
         ) : (
           <>
             <div>
-              <dt>Ambient temp</dt>
+              <dt>Tire Set</dt>
+              <dd>{data.tire_set?.name ?? '—'}</dd>
+            </div>
+            <div>
+              <dt>Ambient Temp</dt>
               <dd>{fmtStoredTemp(s.ambient_temp_c)}</dd>
             </div>
             <div>
-              <dt>Track temp</dt>
+              <dt>Track Temp</dt>
               <dd>{fmtStoredTemp(s.track_temp_c)}</dd>
             </div>
             <div>
               <dt>Target PSI</dt>
               <dd>{s.target_pressure_psi != null ? String(s.target_pressure_psi) : '—'}</dd>
             </div>
+            {fmtRollOut('FL', s.roll_out_pressure_fl)}
+            {fmtRollOut('FR', s.roll_out_pressure_fr)}
+            {fmtRollOut('RL', s.roll_out_pressure_rl)}
+            {fmtRollOut('RR', s.roll_out_pressure_rr)}
+            <div>
+              <dt>Laps</dt>
+              <dd>{ss?.lap_count != null ? String(ss.lap_count) : '—'}</dd>
+            </div>
+            {ss?.fastest_lap_time != null && (
+              <div>
+                <dt>Fastest Lap</dt>
+                <dd>{Number(ss.fastest_lap_time).toFixed(3)}s</dd>
+              </div>
+            )}
+            {ss?.duration_s != null && (
+              <div>
+                <dt>Duration</dt>
+                <dd>{fmtDuration(ss.duration_s)}</dd>
+              </div>
+            )}
+            <div>
+              <dt>Channels</dt>
+              <dd>{ss?.channel_count ?? '—'}</dd>
+            </div>
+            {ss?.sample_count != null && (
+              <div>
+                <dt>Samples</dt>
+                <dd>{ss.sample_count.toLocaleString()}</dd>
+              </div>
+            )}
+            {ss?.has_gps && (
+              <div>
+                <dt>GPS</dt>
+                <dd>Yes</dd>
+              </div>
+            )}
+            {ss?.available_categories && ss.available_categories.length > 0 && (
+              <div>
+                <dt>Categories</dt>
+                <dd>{ss.available_categories.join(', ')}</dd>
+              </div>
+            )}
             <div>
               <dt>Smoothing</dt>
               <dd>{data.smoothing_level}</dd>
             </div>
+            {(() => {
+              const tl = data.track_layouts.find((l) => l.id === s.track_layout_id);
+              return tl ? (
+                <div>
+                  <dt>Track Layout</dt>
+                  <dd>{tl.name}</dd>
+                </div>
+              ) : null;
+            })()}
+            {s.file_path ? (
+              <div>
+                <dt>Source File</dt>
+                <dd className="session-info-file">{String(s.file_path).split(/[\\/]/).pop()}</dd>
+              </div>
+            ) : null}
             <div>
               <dt>Notes</dt>
               <dd>{String(s.lap_count_notes || '—')}</dd>
+            </div>
+
+            {ss?.file_metadata && Object.keys(ss.file_metadata).length > 0 && (
+              <>
+                <div className="session-info-divider" />
+                <div className="session-info-section-header">
+                  <dt>File Metadata</dt>
+                  <dd />
+                </div>
+                {Object.entries(ss.file_metadata).map(([k, v]) => (
+                  <div key={k}>
+                    <dt>{k}</dt>
+                    <dd>{v || '—'}</dd>
+                  </div>
+                ))}
+              </>
+            )}
+
+            <div className="session-info-divider" />
+            <div>
+              <dt>Session ID</dt>
+              <dd className="session-info-id">{String(s.id)}</dd>
             </div>
           </>
         )}

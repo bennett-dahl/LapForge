@@ -9,7 +9,13 @@ export default defineConfig({
     proxy: {
       '/api': 'http://127.0.0.1:5000',
       '/auth': 'http://127.0.0.1:5000',
-      '/static': 'http://127.0.0.1:5000',
+      '/upload': 'http://127.0.0.1:5000',
+      '/static': {
+        target: 'http://127.0.0.1:5000',
+        bypass(req) {
+          if (req.url?.startsWith('/static/spa/')) return req.url;
+        },
+      },
     },
   },
   build: {

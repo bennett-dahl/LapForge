@@ -1,4 +1,5 @@
-import { useMemo, useState, useRef, useEffect } from 'react';
+import { useMemo, useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import TelemetryChart from '../../charts/TelemetryChart';
 import type { TelemetryChannel } from '../../charts/TelemetryChart';
 import {
@@ -20,12 +21,40 @@ export type ChartYAxisConfig = Record<
   { autoScale?: boolean; min?: number; max?: number }
 >;
 
+export const SMOOTH_LEVELS = [
+  { label: 'Raw', window: 1 },
+  { label: 'Light', window: 10 },
+  { label: 'Medium', window: 25 },
+  { label: 'Heavy', window: 50 },
+  { label: 'Ultra', window: 100 },
+] as const;
+
+export function smoothMovingAvg(values: number[], windowSize: number): number[] {
+  if (windowSize <= 1) return values;
+  const half = Math.floor(windowSize / 2);
+  const out = new Array<number>(values.length);
+  for (let i = 0; i < values.length; i++) {
+    const lo = Math.max(0, i - half);
+    const hi = Math.min(values.length, i + half + 1);
+    let sum = 0;
+    let count = 0;
+    for (let j = lo; j < hi; j++) {
+      if (values[j] != null) {
+        sum += values[j];
+        count++;
+      }
+    }
+    out[i] = count > 0 ? sum / count : values[i];
+  }
+  return out;
+}
+
 interface ChartModuleProps {
   xValues: number[];
   xLabel: string;
   xCursorField: 'distance' | 'time';
   series: Record<string, number[]>;
-  channelMeta: Record<string, { label: string; unit?: string }>;
+  channelMeta: Record<string, { label: string; unit?: string; category?: string }>;
   channelKeys: string[];
   lapSplits?: number[];
   sections?: { name: string; start_distance: number; end_distance: number }[];
@@ -35,8 +64,12 @@ interface ChartModuleProps {
   yAxisConfig?: ChartYAxisConfig;
   pressureUnit?: PressureUnit;
   tempUnit?: TempUnit;
-  /** When X is distance (meters), axis ticks show km or mi. */
   distanceUnit?: DistanceUnit;
+  rawPressureSeries?: Record<string, number[]>;
+  smoothLevel?: number;
+  channelColors?: Record<string, string>;
+  groupColors?: Record<string, string>;
+  onUserZoom?: () => void;
 }
 
 /** Chart.js Y scale id for group index 0 → y, 1 → y2, … */
@@ -72,7 +105,7 @@ export function normalizeYAxisGroups(
   return nonEmpty.length > 0 ? nonEmpty : [keys];
 }
 
-function groupsToChannelAxisIndex(groups: string[][]): Record<string, number> {
+export function groupsToChannelAxisIndex(groups: string[][]): Record<string, number> {
   const map: Record<string, number> = {};
   groups.forEach((row, gi) => {
     for (const k of row) map[k] = gi;
@@ -80,7 +113,7 @@ function groupsToChannelAxisIndex(groups: string[][]): Record<string, number> {
   return map;
 }
 
-function rebuildGroupsFromAxisIndex(
+export function rebuildGroupsFromAxisIndex(
   channelKeys: string[],
   axisByChannel: Record<string, number>,
   groupCount: number,
@@ -96,7 +129,7 @@ function rebuildGroupsFromAxisIndex(
   return groups.filter((g) => g.length > 0);
 }
 
-function addYAxisGroup(groups: string[][]): string[][] {
+export function addYAxisGroup(groups: string[][]): string[][] {
   const g = groups.map((r) => [...r]);
   let donorIdx = -1;
   for (let i = g.length - 1; i >= 0; i--) {
@@ -113,7 +146,7 @@ function addYAxisGroup(groups: string[][]): string[][] {
   return g.filter((r) => r.length > 0);
 }
 
-function removeLastYAxisGroup(groups: string[][]): string[][] {
+export function removeLastYAxisGroup(groups: string[][]): string[][] {
   if (groups.length <= 1) return groups;
   const out = groups.slice(0, -1);
   const last = groups[groups.length - 1];
@@ -121,7 +154,7 @@ function removeLastYAxisGroup(groups: string[][]): string[][] {
   return out;
 }
 
-function compactYAxisConfig(
+export function compactYAxisConfig(
   cfg: ChartYAxisConfig | undefined,
   validIds: Set<string>,
 ): ChartYAxisConfig | undefined {
@@ -138,7 +171,52 @@ export interface ChartYAxisHeaderButtonProps {
   channelMeta: Record<string, { label: string; unit?: string }>;
   yAxisGroups?: string[][];
   yAxisConfig?: ChartYAxisConfig;
-  onApply: (patch: { yAxisGroups?: string[][]; yAxisConfig?: ChartYAxisConfig }) => void;
+  groupColors?: Record<string, string>;
+  onApply: (patch: {
+    yAxisGroups?: string[][];
+    yAxisConfig?: ChartYAxisConfig;
+    groupColors?: Record<string, string>;
+  }) => void;
+}
+
+const GROUP_LABELS = ['A', 'B', 'C', 'D'] as const;
+const GROUP_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#c8960c'];
+
+interface DraftScaleCfg {
+  min: string;
+  max: string;
+  zero: boolean;
+}
+
+function buildDraftAssign(
+  keys: string[],
+  groups: string[][] | undefined,
+): Record<string, number> {
+  const normalized = normalizeYAxisGroups(keys, groups);
+  const map: Record<string, number> = {};
+  normalized.forEach((row, gi) => {
+    for (const k of row) map[k] = gi;
+  });
+  for (const k of keys) {
+    if (!(k in map)) map[k] = 0;
+  }
+  return map;
+}
+
+function buildDraftScales(
+  config: ChartYAxisConfig | undefined,
+): DraftScaleCfg[] {
+  return GROUP_LABELS.map((_, gi) => {
+    const axisId = yAxisIdForGroupIndex(gi);
+    const cfg = config?.[axisId];
+    const hasMin = cfg?.min != null && Number.isFinite(cfg.min);
+    const hasMax = cfg?.max != null && Number.isFinite(cfg.max);
+    return {
+      min: hasMin ? String(cfg!.min) : '',
+      max: hasMax ? String(cfg!.max) : '',
+      zero: hasMin && cfg!.min === 0,
+    };
+  });
 }
 
 export function ChartYAxisHeaderButton({
@@ -146,81 +224,94 @@ export function ChartYAxisHeaderButton({
   channelMeta,
   yAxisGroups,
   yAxisConfig,
+  groupColors,
   onApply,
 }: ChartYAxisHeaderButtonProps) {
   const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLSpanElement>(null);
+
+  const keys = useMemo(() => channelKeys.filter((k) => k), [channelKeys]);
+
+  const [draftAssign, setDraftAssign] = useState<Record<string, number>>(() =>
+    buildDraftAssign(keys, yAxisGroups),
+  );
+  const [draftScales, setDraftScales] = useState<DraftScaleCfg[]>(() =>
+    buildDraftScales(yAxisConfig),
+  );
+  const [draftGroupColors, setDraftGroupColors] = useState<Record<string, string>>(() =>
+    ({ ...(groupColors ?? {}) }),
+  );
 
   useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (anchorRef.current && !anchorRef.current.contains(e.target as Node)) {
-        setOpen(false);
+    if (open) {
+      setDraftAssign(buildDraftAssign(keys, yAxisGroups));
+      setDraftScales(buildDraftScales(yAxisConfig));
+      setDraftGroupColors({ ...(groupColors ?? {}) });
+    }
+  }, [open, keys, yAxisGroups, yAxisConfig, groupColors]);
+
+  const usedGroups = useMemo(() => {
+    const used = new Set<number>();
+    for (const gi of Object.values(draftAssign)) used.add(gi);
+    return used;
+  }, [draftAssign]);
+
+  function resolveGroupColor(gi: number): string {
+    return draftGroupColors[String(gi)] ?? GROUP_COLORS[gi] ?? GROUP_COLORS[0];
+  }
+
+  function handleApply() {
+    const groups: string[][] = GROUP_LABELS.map(() => []);
+    for (const k of keys) {
+      const gi = draftAssign[k] ?? 0;
+      groups[gi].push(k);
+    }
+    const nonEmpty = groups.filter((g) => g.length > 0);
+
+    const config: ChartYAxisConfig = {};
+    GROUP_LABELS.forEach((_, gi) => {
+      const axisId = yAxisIdForGroupIndex(gi);
+      if (!usedGroups.has(gi)) return;
+      const s = draftScales[gi];
+      const hasMin = s.min !== '';
+      const hasMax = s.max !== '';
+      if (hasMin || hasMax || s.zero) {
+        config[axisId] = {
+          autoScale: false,
+          ...(hasMin ? { min: Number(s.min) } : {}),
+          ...(hasMax ? { max: Number(s.max) } : {}),
+          ...(s.zero && !hasMin ? { min: 0 } : {}),
+        };
       }
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-
-  const keys = useMemo(
-    () => channelKeys.filter((k) => k),
-    [channelKeys],
-  );
-
-  const normalizedGroups = useMemo(
-    () => normalizeYAxisGroups(keys, yAxisGroups),
-    [keys, yAxisGroups],
-  );
-
-  const axisByChannel = useMemo(
-    () => groupsToChannelAxisIndex(normalizedGroups),
-    [normalizedGroups],
-  );
-
-  const setGroupsAndConfig = (nextGroups: string[][]) => {
-    const ids = new Set(nextGroups.map((_, i) => yAxisIdForGroupIndex(i)));
-    onApply({
-      yAxisGroups: nextGroups,
-      yAxisConfig: compactYAxisConfig(yAxisConfig, ids) ?? {},
     });
-  };
 
-  const updateConfigForAxis = (
-    axisId: string,
-    patch: Partial<{ autoScale?: boolean; min?: number; max?: number }>,
-  ) => {
-    const prev = yAxisConfig ?? {};
-    const cur = prev[axisId] ?? {};
+    const compactColors: Record<string, string> = {};
+    for (const [gi, color] of Object.entries(draftGroupColors)) {
+      const idx = Number(gi);
+      if (usedGroups.has(idx) && color !== GROUP_COLORS[idx]) {
+        compactColors[gi] = color;
+      }
+    }
+
     onApply({
-      yAxisConfig: { ...prev, [axisId]: { ...cur, ...patch } },
+      yAxisGroups: nonEmpty,
+      yAxisConfig: Object.keys(config).length > 0 ? config : {},
+      groupColors: Object.keys(compactColors).length > 0 ? compactColors : undefined,
     });
-  };
+    setOpen(false);
+  }
 
-  const onChannelAxisChange = (channelKey: string, axisIndex: number) => {
-    const n = normalizedGroups.length;
-    const nextMap = { ...axisByChannel, [channelKey]: axisIndex };
-    const nextGroups = rebuildGroupsFromAxisIndex(keys, nextMap, n);
-    setGroupsAndConfig(nextGroups);
-  };
-
-  const onAddAxis = () => {
-    const next = addYAxisGroup(normalizedGroups);
-    setGroupsAndConfig(next);
-  };
-
-  const onRemoveLastAxis = () => {
-    const next = removeLastYAxisGroup(normalizedGroups);
-    const ids = new Set(next.map((_, i) => yAxisIdForGroupIndex(i)));
-    onApply({
-      yAxisGroups: next,
-      yAxisConfig: compactYAxisConfig(yAxisConfig, ids) ?? {},
-    });
-  };
+  function handleReset() {
+    const fresh: Record<string, number> = {};
+    for (const k of keys) fresh[k] = 0;
+    setDraftAssign(fresh);
+    setDraftScales(GROUP_LABELS.map(() => ({ min: '', max: '', zero: false })));
+    setDraftGroupColors({});
+  }
 
   if (keys.length === 0) return null;
 
   return (
-    <span className="yaxis-popover-anchor" ref={anchorRef}>
+    <>
       <button
         type="button"
         className={`panel-btn${open ? ' btn-active' : ''}`}
@@ -229,117 +320,162 @@ export function ChartYAxisHeaderButton({
       >
         Y-Axis
       </button>
-      {open && (
-        <div className="yaxis-popover" role="dialog" aria-label="Y axis settings">
-          {normalizedGroups.map((groupKeys, gi) => {
-            const axisId = yAxisIdForGroupIndex(gi);
-            const cfg = yAxisConfig?.[axisId] ?? {};
-            const auto = cfg.autoScale !== false;
-            const side = gi % 2 === 0 ? 'left' : 'right';
-            return (
-              <div key={axisId} className="yaxis-popover-axis">
-                <div className="yaxis-popover-axis-title">
-                  Axis {gi + 1} ({side})
-                </div>
-                <ul className="yaxis-popover-channels-list">
-                  {groupKeys.map((k) => (
-                    <li key={k}>{channelMeta[k]?.label ?? k}</li>
-                  ))}
-                </ul>
-                <label className="yaxis-popover-check">
-                  <input
-                    type="checkbox"
-                    checked={auto}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        updateConfigForAxis(axisId, {
-                          autoScale: true,
-                          min: undefined,
-                          max: undefined,
-                        });
-                      } else {
-                        updateConfigForAxis(axisId, { autoScale: false });
-                      }
-                    }}
-                  />
-                  Auto-scale
-                </label>
-                <div className="yaxis-popover-minmax">
-                  <label>
-                    Min
-                    <input
-                      type="number"
-                      disabled={auto}
-                      value={cfg.min ?? ''}
-                      placeholder="auto"
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        updateConfigForAxis(axisId, {
-                          min: v === '' ? undefined : Number(v),
-                          autoScale: false,
-                        });
-                      }}
-                    />
-                  </label>
-                  <label>
-                    Max
-                    <input
-                      type="number"
-                      disabled={auto}
-                      value={cfg.max ?? ''}
-                      placeholder="auto"
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        updateConfigForAxis(axisId, {
-                          max: v === '' ? undefined : Number(v),
-                          autoScale: false,
-                        });
-                      }}
-                    />
-                  </label>
-                </div>
-              </div>
-            );
-          })}
-          <div className="yaxis-popover-actions">
-            <button type="button" className="panel-btn" onClick={onAddAxis}>
-              Add Y axis
-            </button>
-            {normalizedGroups.length > 1 && (
-              <button type="button" className="panel-btn" onClick={onRemoveLastAxis}>
-                Merge last axis
+      {open && createPortal(
+        <div className="yaxis-modal-overlay" onClick={() => setOpen(false)}>
+          <div
+            className="yaxis-modal"
+            role="dialog"
+            aria-label="Y-Axis Groups"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="yaxis-modal-header">
+              <h3>Y-Axis Groups</h3>
+              <button
+                type="button"
+                className="yaxis-modal-close"
+                onClick={() => setOpen(false)}
+              >
+                ×
               </button>
-            )}
+            </div>
+
+            <p className="yaxis-modal-desc">
+              Assign channels to groups. Each group gets its own Y-axis scale.
+            </p>
+
+            <div className="yaxis-modal-channels">
+              {keys.map((k) => {
+                const active = draftAssign[k] ?? 0;
+                return (
+                  <div key={k} className="ygroup-row">
+                    <span
+                      className="ygroup-label"
+                      style={{ color: resolveGroupColor(active) }}
+                    >
+                      {channelMeta[k]?.label ?? k}
+                    </span>
+                    <div className="ygroup-btns">
+                      {GROUP_LABELS.map((lbl, gi) => (
+                        <button
+                          key={lbl}
+                          type="button"
+                          className={`ygroup-btn${active === gi ? ' active' : ''}`}
+                          style={
+                            { '--gc': resolveGroupColor(gi) } as React.CSSProperties
+                          }
+                          onClick={() =>
+                            setDraftAssign((prev) => ({ ...prev, [k]: gi }))
+                          }
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="yaxis-modal-scales">
+              <p className="yaxis-modal-scales-title">
+                Scale limits (leave blank for auto)
+              </p>
+              {GROUP_LABELS.map((lbl, gi) => {
+                if (!usedGroups.has(gi)) return null;
+                const s = draftScales[gi];
+                return (
+                  <div key={lbl} className="yscale-row">
+                    <span
+                      className="yscale-label"
+                      style={{ color: resolveGroupColor(gi) }}
+                    >
+                      <input
+                        type="color"
+                        className="group-color-picker"
+                        value={resolveGroupColor(gi)}
+                        title={`Color for Group ${lbl}`}
+                        onChange={(e) => {
+                          setDraftGroupColors((prev) => ({
+                            ...prev,
+                            [String(gi)]: e.target.value,
+                          }));
+                        }}
+                      />
+                      Group {lbl}
+                    </span>
+                    <div className="yscale-inputs">
+                      <span>Min</span>
+                      <input
+                        type="number"
+                        className="yscale-input"
+                        placeholder="Auto"
+                        value={s.zero && s.min === '' ? '0' : s.min}
+                        onChange={(e) => {
+                          const next = [...draftScales];
+                          next[gi] = {
+                            ...s,
+                            min: e.target.value,
+                            zero: e.target.value === '0',
+                          };
+                          setDraftScales(next);
+                        }}
+                      />
+                      <span>–</span>
+                      <span>Max</span>
+                      <input
+                        type="number"
+                        className="yscale-input"
+                        placeholder="Auto"
+                        value={s.max}
+                        onChange={(e) => {
+                          const next = [...draftScales];
+                          next[gi] = { ...s, max: e.target.value };
+                          setDraftScales(next);
+                        }}
+                      />
+                      <label className="yscale-zero-label">
+                        <input
+                          type="checkbox"
+                          checked={s.zero}
+                          onChange={(e) => {
+                            const next = [...draftScales];
+                            next[gi] = {
+                              ...s,
+                              zero: e.target.checked,
+                              min: e.target.checked ? '0' : '',
+                            };
+                            setDraftScales(next);
+                          }}
+                        />
+                        Zero
+                      </label>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="yaxis-modal-footer">
+              <button
+                type="button"
+                className="panel-btn"
+                onClick={handleReset}
+              >
+                Reset all
+              </button>
+              <button
+                type="button"
+                className="yaxis-modal-apply"
+                onClick={handleApply}
+              >
+                Apply
+              </button>
+            </div>
           </div>
-          <div className="yaxis-popover-assign">
-            <div className="yaxis-popover-assign-title">Channel → axis</div>
-            {keys.map((k) => (
-              <div key={k} className="yaxis-popover-assign-row">
-                <span className="yaxis-popover-assign-label">
-                  {channelMeta[k]?.label ?? k}
-                </span>
-                <select
-                  className="yaxis-popover-select"
-                  value={Math.min(
-                    axisByChannel[k] ?? 0,
-                    normalizedGroups.length - 1,
-                  )}
-                  onChange={(e) =>
-                    onChannelAxisChange(k, Number(e.target.value))
-                  }
-                >
-                  {normalizedGroups.map((_, gi) => (
-                    <option key={gi} value={gi}>
-                      {gi + 1}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ))}
-          </div>
-        </div>
+        </div>,
+        document.body,
       )}
-    </span>
+    </>
   );
 }
 
@@ -359,6 +495,11 @@ export default function ChartModule({
   pressureUnit = 'psi',
   tempUnit = 'c',
   distanceUnit = 'km',
+  rawPressureSeries,
+  smoothLevel = 0,
+  channelColors,
+  groupColors,
+  onUserZoom,
 }: ChartModuleProps) {
   const keys = useMemo(
     () => channelKeys.filter((k) => series[k]),
@@ -379,24 +520,34 @@ export default function ChartModule({
     return m;
   }, [groups]);
 
+  const smoothWin = SMOOTH_LEVELS[smoothLevel]?.window ?? 1;
+
   const channels: TelemetryChannel[] = useMemo(() => {
     return keys.map((k) => {
       const meta = channelMeta[k];
-      const raw = series[k];
-      let data = raw;
+      let data: number[];
+      const isPressure = isPressureTelemetryChannel(meta, k);
+      if (isPressure && rawPressureSeries?.[k]) {
+        data = smoothWin > 1
+          ? smoothMovingAvg(rawPressureSeries[k], smoothWin)
+          : rawPressureSeries[k];
+      } else {
+        data = series[k];
+      }
       const pStore = storagePressureUnit(meta, k);
-      if (isPressureTelemetryChannel(meta, k)) {
-        data = mapNumericArray(raw, (v) => convertPressure(v, pStore, pressureUnit));
+      if (isPressure) {
+        data = mapNumericArray(data, (v) => convertPressure(v, pStore, pressureUnit));
       } else if (isCelsiusTelemetryChannel(meta, k) && tempUnit === 'f') {
-        data = mapNumericArray(raw, (v) => convertTemp(v, 'c', 'f'));
+        data = mapNumericArray(data, (v) => convertTemp(v, 'c', 'f'));
       }
       return {
         label: channelMeta[k]?.label ?? k,
         data,
         yAxisID: yAxisIdForGroupIndex(keyToGroupIndex[k] ?? 0),
+        ...(channelColors?.[k] ? { color: channelColors[k] } : {}),
       };
     });
-  }, [keys, keyToGroupIndex, series, channelMeta, pressureUnit, tempUnit]);
+  }, [keys, keyToGroupIndex, series, channelMeta, pressureUnit, tempUnit, rawPressureSeries, smoothWin, channelColors]);
 
   const yScaleTitles = useMemo(() => {
     const titles: Record<string, string> = {};
@@ -439,6 +590,17 @@ export default function ChartModule({
     return Object.keys(out).length > 0 ? out : undefined;
   }, [yAxisConfig]);
 
+  const yAxisColors = useMemo(() => {
+    if (!groupColors || Object.keys(groupColors).length === 0) return undefined;
+    const map: Record<string, string> = {};
+    for (let gi = 0; gi < groups.length; gi++) {
+      const axisId = yAxisIdForGroupIndex(gi);
+      const c = groupColors[String(gi)];
+      if (c) map[axisId] = c;
+    }
+    return Object.keys(map).length > 0 ? map : undefined;
+  }, [groups, groupColors]);
+
   const sectionOverlays = useMemo(
     () => sections.map((s) => ({
       name: s.name,
@@ -460,7 +622,9 @@ export default function ChartModule({
       xRange={xRange}
       yOverrides={yOverrides}
       yScaleTitles={yScaleTitles}
+      yAxisColors={yAxisColors}
       distanceDisplayUnit={xCursorField === 'distance' ? distanceUnit : undefined}
+      onUserZoom={onUserZoom}
     />
   );
 }

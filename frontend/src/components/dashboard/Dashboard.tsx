@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef, type DragEvent } from 'react';
 import type { DashboardModule } from '../../types/models';
 import { useCursorStore } from '../../contexts/CursorSyncContext';
-import ChartModule, { ChartYAxisHeaderButton } from './modules/ChartModule';
+import ChartModule, { ChartYAxisHeaderButton, SMOOTH_LEVELS } from './modules/ChartModule';
 import LapBar from './LapBar';
 import MapModule from './modules/MapModule';
 import ReadoutModule from './modules/ReadoutModule';
@@ -54,7 +54,7 @@ export interface DashboardData {
   times: number[];
   distances: number[];
   series: Record<string, number[]>;
-  channel_meta: Record<string, { label: string; unit?: string }>;
+  channel_meta: Record<string, { label: string; unit?: string; category?: string }>;
   channels_by_category: Record<string, string[]>;
   lap_splits: number[];
   lap_split_distances: number[];
@@ -66,6 +66,7 @@ export interface DashboardData {
   points?: { lat: number; lng: number; distance?: number }[];
   tire_summary?: Record<string, unknown>;
   target_pressure_psi?: number | null;
+  raw_pressure_series?: Record<string, number[]>;
   sessions?: DashboardData[];
   comparison_id?: string;
   /** Present on comparison dashboard API payloads */
@@ -81,7 +82,7 @@ interface DashboardProps {
   /** Override channel grouping (defaults to `data.channels_by_category`) */
   channelsByCategory?: Record<string, string[]>;
   /** Override channel labels/units (defaults to `data.channel_meta`) */
-  channelMeta?: Record<string, { label: string; unit?: string }>;
+  channelMeta?: Record<string, { label: string; unit?: string; category?: string }>;
   pressureUnit?: PressureUnit;
   tempUnit?: TempUnit;
   distanceUnit?: DistanceUnit;
@@ -101,20 +102,23 @@ export default function Dashboard({
   const cursorStore = useCursorStore();
   const setSyncedXRange = useCallback((min: number, max: number) => cursorStore.setXRange(min, max), [cursorStore]);
   const resetSyncedZoom = useCallback(() => cursorStore.resetZoom(), [cursorStore]);
-  const [xRange, setXRange] = useState<{ min: number; max: number } | null>(null);
+  const [lapRangeIdx, setLapRangeIdx] = useState<{ lo: number; hi: number } | null>(null);
 
   const onLapZoomRange = useCallback(
     (min: number, max: number) => {
-      setXRange({ min, max });
       setSyncedXRange(min, max);
     },
     [setSyncedXRange],
   );
 
   const onLapResetZoom = useCallback(() => {
-    setXRange(null);
+    setLapRangeIdx(null);
     resetSyncedZoom();
   }, [resetSyncedZoom]);
+
+  const handleUserZoom = useCallback(() => {
+    setLapRangeIdx(null);
+  }, []);
 
   const [layout, setLayout] = useState<DashboardModule[]>(
     () => initialLayout ?? DEFAULT_LAYOUT,
@@ -140,7 +144,11 @@ export default function Dashboard({
     (lap: number) => {
       const splits = data.has_distance ? data.lap_split_distances : data.lap_splits;
       const r = zoomRangeForLapNumber(splits, data.lap_times, lap);
-      if (r && r.min < r.max) onLapZoomRange(r.min, r.max);
+      if (r && r.min < r.max) {
+        onLapZoomRange(r.min, r.max);
+        const idx = data.lap_times.findIndex((lt) => lt.lap === lap);
+        if (idx >= 0) setLapRangeIdx({ lo: idx, hi: idx });
+      }
     },
     [data.has_distance, data.lap_split_distances, data.lap_splits, data.lap_times, onLapZoomRange],
   );
@@ -248,10 +256,18 @@ export default function Dashboard({
     window.addEventListener('mouseup', onUp);
   }
 
-  function applyChartChannels(channels: string[]) {
+  function applyChartChannels(channels: string[], channelColors: Record<string, string>) {
     if (channelPickerIdx === null) return;
     const idx = channelPickerIdx;
-    const next = layout.map((m, i) => (i === idx ? { ...m, channels } : m));
+    const next = layout.map((m, i) =>
+      i === idx
+        ? {
+            ...m,
+            channels,
+            channelColors: Object.keys(channelColors).length > 0 ? channelColors : undefined,
+          }
+        : m,
+    );
     updateLayout(next);
   }
 
@@ -267,6 +283,8 @@ export default function Dashboard({
         hasDistance={data.has_distance}
         onZoomRange={onLapZoomRange}
         onResetZoom={onLapResetZoom}
+        rangeIdx={lapRangeIdx}
+        onRangeIdxChange={setLapRangeIdx}
       />
       <div className="dash-modules">
         {layout.map((mod, idx) => {
@@ -308,6 +326,9 @@ export default function Dashboard({
                             | Record<string, { autoScale?: boolean; min?: number; max?: number }>
                             | undefined
                         }
+                        groupColors={
+                          mod.groupColors as Record<string, string> | undefined
+                        }
                         onApply={(patch) => {
                           const cur = layoutRef.current;
                           updateLayout(
@@ -321,11 +342,41 @@ export default function Dashboard({
                                 ...(patch.yAxisConfig !== undefined
                                   ? { yAxisConfig: patch.yAxisConfig }
                                   : {}),
+                                ...(patch.groupColors !== undefined
+                                  ? { groupColors: patch.groupColors }
+                                  : {}),
                               };
                             }),
                           );
                         }}
                       />
+                      {(() => {
+                        const chans = (mod.channels as string[] | undefined) ?? [];
+                        const hasPressure = chans.some((c) => {
+                          const cat = channelMetaResolved[c]?.category;
+                          return cat === 'pressure' || /tpms_press/i.test(c);
+                        });
+                        if (!hasPressure) return null;
+                        return (
+                          <select
+                            className="panel-select smooth-select"
+                            title="TPMS Smoothing"
+                            value={(mod.smoothLevel as number | undefined) ?? 0}
+                            onChange={(e) => {
+                              const cur = layoutRef.current;
+                              updateLayout(
+                                cur.map((m, i) =>
+                                  i === idx ? { ...m, smoothLevel: Number(e.target.value) } : m,
+                                ),
+                              );
+                            }}
+                          >
+                            {SMOOTH_LEVELS.map((lvl, li) => (
+                              <option key={li} value={li}>{lvl.label}</option>
+                            ))}
+                          </select>
+                        );
+                      })()}
                     </>
                   )}
                   <button
@@ -362,7 +413,6 @@ export default function Dashboard({
                     channelKeys={mod.channels as string[] ?? []}
                     lapSplits={data.has_distance ? data.lap_split_distances : data.lap_splits}
                     sections={data.sections}
-                    xRange={xRange}
                     yAxisGroups={mod.yAxisGroups as string[][] | undefined}
                     yAxisConfig={
                       mod.yAxisConfig as
@@ -372,6 +422,15 @@ export default function Dashboard({
                     pressureUnit={pressureUnit}
                     tempUnit={tempUnit}
                     distanceUnit={distanceUnit}
+                    rawPressureSeries={data.raw_pressure_series}
+                    smoothLevel={(mod.smoothLevel as number | undefined) ?? 0}
+                    channelColors={
+                      mod.channelColors as Record<string, string> | undefined
+                    }
+                    groupColors={
+                      mod.groupColors as Record<string, string> | undefined
+                    }
+                    onUserZoom={handleUserZoom}
                   />
                 )}
                 {mod.type === 'map' && (
@@ -434,6 +493,9 @@ export default function Dashboard({
         channelsByCategory={channelsByCategory}
         channelMeta={channelMetaResolved}
         selected={pickerSelected}
+        channelColors={
+          pickerMod?.channelColors as Record<string, string> | undefined
+        }
         onApply={applyChartChannels}
       />
     </div>

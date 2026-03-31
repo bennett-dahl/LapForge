@@ -101,6 +101,12 @@ export interface DashboardModule {
   yAxisGroups?: string[][];
   /** Per-axis scale options; keys match Chart.js scale ids (y, y2, …). */
   yAxisConfig?: Record<string, { autoScale?: boolean; min?: number; max?: number }>;
+  /** Client-side pressure smoothing level index (0 = Raw). */
+  smoothLevel?: number;
+  /** Custom line colors per channel key (hex). */
+  channelColors?: Record<string, string>;
+  /** Custom Y-axis group colors keyed by group index '0'..'3' (hex). */
+  groupColors?: Record<string, string>;
   [key: string]: unknown;
 }
 

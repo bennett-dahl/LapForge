@@ -28,6 +28,9 @@ export interface LapBarProps {
   hasDistance: boolean;
   onZoomRange: (min: number, max: number) => void;
   onResetZoom: () => void;
+  /** Controlled selection state (lifted from parent). */
+  rangeIdx?: { lo: number; hi: number } | null;
+  onRangeIdxChange?: (rangeIdx: { lo: number; hi: number } | null) => void;
 }
 
 function fmtLapTime(s: number): string {
@@ -71,11 +74,21 @@ export default function LapBar({
   hasDistance,
   onZoomRange,
   onResetZoom,
+  rangeIdx: rangeIdxProp,
+  onRangeIdxChange,
 }: LapBarProps) {
   const splits =
     lapSplitDistances.length > 0 ? lapSplitDistances : lapSplits;
   const anchorRef = useRef<number | null>(null);
-  const [rangeIdx, setRangeIdx] = useState<{ lo: number; hi: number } | null>(null);
+  const [rangeIdxLocal, setRangeIdxLocal] = useState<{ lo: number; hi: number } | null>(null);
+  const rangeIdx = rangeIdxProp !== undefined ? rangeIdxProp : rangeIdxLocal;
+  const setRangeIdx = useCallback(
+    (val: { lo: number; hi: number } | null) => {
+      if (onRangeIdxChange) onRangeIdxChange(val);
+      else setRangeIdxLocal(val);
+    },
+    [onRangeIdxChange],
+  );
 
   const fastIndex = useMemo(() => {
     const flagged = lapTimes.findIndex((lt) => lt.fast);

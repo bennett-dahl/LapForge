@@ -4,6 +4,17 @@ import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 
+const cssLink = document.createElement('link');
+cssLink.rel = 'stylesheet';
+cssLink.href = '/static/style.css';
+document.head.appendChild(cssLink);
+
+const favicon = document.createElement('link');
+favicon.rel = 'icon';
+favicon.type = 'image/x-icon';
+favicon.href = '/static/favicon.ico';
+document.head.appendChild(favicon);
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -16,7 +27,7 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename="/static/spa">
         <App />
       </BrowserRouter>
     </QueryClientProvider>

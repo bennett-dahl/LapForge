@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 
+const LINE_COLORS = [
+  '#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#a855f7',
+  '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#6366f1',
+  '#14b8a6', '#e879f9', '#eab308', '#0ea5e9', '#f43f5e',
+];
+
 export interface ChannelPickerMeta {
   label: string;
   unit?: string;
@@ -11,7 +17,12 @@ interface ChannelPickerModalProps {
   channelsByCategory: Record<string, string[]>;
   channelMeta: Record<string, ChannelPickerMeta>;
   selected: string[];
-  onApply: (channels: string[]) => void;
+  channelColors?: Record<string, string>;
+  onApply: (channels: string[], channelColors: Record<string, string>) => void;
+}
+
+function defaultColorForIndex(i: number): string {
+  return LINE_COLORS[i % LINE_COLORS.length];
 }
 
 export default function ChannelPickerModal({
@@ -20,13 +31,18 @@ export default function ChannelPickerModal({
   channelsByCategory,
   channelMeta,
   selected,
+  channelColors,
   onApply,
 }: ChannelPickerModalProps) {
   const [picked, setPicked] = useState<string[]>(selected);
+  const [draftColors, setDraftColors] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (open) setPicked([...selected]);
-  }, [open, selected]);
+    if (open) {
+      setPicked([...selected]);
+      setDraftColors({ ...(channelColors ?? {}) });
+    }
+  }, [open, selected, channelColors]);
 
   useEffect(() => {
     if (!open) return;
@@ -44,9 +60,16 @@ export default function ChannelPickerModal({
   }, []);
 
   const handleApply = useCallback(() => {
-    onApply(picked);
+    const compact: Record<string, string> = {};
+    picked.forEach((k, i) => {
+      const custom = draftColors[k];
+      if (custom && custom !== defaultColorForIndex(i)) {
+        compact[k] = custom;
+      }
+    });
+    onApply(picked, compact);
     onClose();
-  }, [picked, onApply, onClose]);
+  }, [picked, draftColors, onApply, onClose]);
 
   if (!open) return null;
 
@@ -92,6 +115,11 @@ export default function ChannelPickerModal({
                     const meta = channelMeta[key];
                     const label = meta?.label ?? key;
                     const unit = meta?.unit ? ` (${meta.unit})` : '';
+                    const isChecked = picked.includes(key);
+                    const pickedIdx = picked.indexOf(key);
+                    const currentColor =
+                      draftColors[key] ??
+                      (pickedIdx >= 0 ? defaultColorForIndex(pickedIdx) : defaultColorForIndex(0));
                     return (
                       <label
                         key={key}
@@ -105,10 +133,24 @@ export default function ChannelPickerModal({
                       >
                         <input
                           type="checkbox"
-                          checked={picked.includes(key)}
+                          checked={isChecked}
                           onChange={() => toggle(key)}
                         />
-                        <span>{label}{unit}</span>
+                        {isChecked && (
+                          <input
+                            type="color"
+                            className="channel-color-picker"
+                            value={currentColor}
+                            title={`Color for ${label}`}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => {
+                              setDraftColors((prev) => ({ ...prev, [key]: e.target.value }));
+                            }}
+                          />
+                        )}
+                        <span style={isChecked ? { color: currentColor } : undefined}>
+                          {label}{unit}
+                        </span>
                       </label>
                     );
                   })}

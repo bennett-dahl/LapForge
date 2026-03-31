@@ -18,7 +18,7 @@ from LapForge.channels import categorize_channels, detect_channels
 # Constants (moved from app.py)
 # ---------------------------------------------------------------------------
 
-PIPELINE_VERSION: int = 6  # Bump when channel registry or pipeline logic changes
+PIPELINE_VERSION: int = 7  # Bump when channel registry or pipeline logic changes
 
 CHART_SMOOTH_WINDOW_S: float = 10.0
 CHART_SAMPLE_RATE_HZ: int = 50
@@ -528,6 +528,14 @@ def build_summary(ctx: dict) -> None:
     }
 
 
+_CORNER_MAP = {
+    "tpms_press_fl": "fl", "tpms_press_fl_psi": "fl",
+    "tpms_press_fr": "fr", "tpms_press_fr_psi": "fr",
+    "tpms_press_rl": "rl", "tpms_press_rl_psi": "rl",
+    "tpms_press_rr": "rr", "tpms_press_rr_psi": "rr",
+}
+
+
 def _pressure_summary(
     full_times: list[float],
     full_series: dict[str, list[float | None]],
@@ -536,7 +544,7 @@ def _pressure_summary(
     use_psi: bool,
     target_psi: float = DEFAULT_TARGET_PSI,
 ) -> dict:
-    """Compute pressure summary from columnar arrays (replaces _session_summary)."""
+    """Compute per-corner and global pressure summary from columnar arrays."""
     if not pressure_cols or not full_times:
         return {}
 
@@ -545,16 +553,26 @@ def _pressure_summary(
 
     per_lap_vals: dict[int, list[float]] = {}
     all_vals: list[float] = []
+    corner_vals: dict[str, list[float]] = {}
+    corner_first: dict[str, float | None] = {}
+    corner_last: dict[str, float | None] = {}
 
-    for idx, t in enumerate(full_times):
-        lap = _lap_index_at(t, lap_splits)
-        for c in pressure_cols:
-            raw = full_series[c][idx] if idx < len(full_series.get(c, [])) else None
+    for c in pressure_cols:
+        corner = _CORNER_MAP.get(c.lower())
+        series_data = full_series.get(c, [])
+        for idx, t in enumerate(full_times):
+            lap = _lap_index_at(t, lap_splits)
+            raw = series_data[idx] if idx < len(series_data) else None
             if raw is None:
                 continue
             val = raw * multiplier
             all_vals.append(val)
             per_lap_vals.setdefault(lap, []).append(val)
+            if corner:
+                corner_vals.setdefault(corner, []).append(val)
+                if corner not in corner_first:
+                    corner_first[corner] = val
+                corner_last[corner] = val
 
     if not all_vals:
         return {}
@@ -567,7 +585,7 @@ def _pressure_summary(
         if max(vals) > target:
             laps_over.append(lap_idx)
 
-    return {
+    result: dict = {
         "target": target,
         "unit": "psi" if use_psi else "bar",
         "global_min": global_min,
@@ -586,6 +604,21 @@ def _pressure_summary(
             else "Laps over target — reduce starting pressure so steady-state stays at or just under target."
         ),
     }
+
+    for corner in ("fl", "fr", "rl", "rr"):
+        vals = corner_vals.get(corner, [])
+        if not vals:
+            result[corner] = {"avg": None, "min": None, "max": None, "start": None, "end": None}
+        else:
+            result[corner] = {
+                "avg": round(sum(vals) / len(vals), 3),
+                "min": round(min(vals), 3),
+                "max": round(max(vals), 3),
+                "start": round(corner_first.get(corner, vals[0]), 3),
+                "end": round(corner_last.get(corner, vals[-1]), 3),
+            }
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +691,7 @@ def _build_result_blob(ctx: dict, smoothing_level: int, parsed: dict) -> dict:
         "raw_pressure_chart": ctx.get("raw_pressure_chart", {}),
         "reference_lap": ctx.get("reference_lap"),
         "summary": ctx.get("summary", {}),
+        "file_metadata": parsed.get("metadata") or {},
     }
 
 

@@ -344,6 +344,16 @@ def create_app() -> Flask:
 
         target_psi = _session_target_psi(session)
 
+        use_psi = True  # dashboard always receives psi-converted data
+        raw_pres_chart = sd.get("raw_pressure_chart") or {}
+        raw_pres_out: dict[str, Any] = {}
+        for cname, vals in raw_pres_chart.items():
+            cmeta = channel_meta.get(cname, {})
+            if use_psi and cmeta.get("unit") == "bar":
+                raw_pres_out[cname] = [round(v * BAR_TO_PSI, 4) if v is not None else None for v in vals]
+            else:
+                raw_pres_out[cname] = vals
+
         return {
             "times": times,
             "distances": distances,
@@ -359,6 +369,7 @@ def create_app() -> Flask:
             "points": gps_points,
             "tire_summary": tire_summary,
             "target_pressure_psi": target_psi,
+            "raw_pressure_series": raw_pres_out,
         }
 
     def _build_chart_data_v2(session_data: dict, use_psi: bool, target_psi: float | None = None) -> dict | None:
@@ -1026,6 +1037,38 @@ def create_app() -> Flask:
 
         return jsonify({"ok": True, "sections": saved})
 
+    @app.route("/api/sections/<track_name>/auto-detect", methods=["GET"])
+    def api_auto_detect_sections(track_name: str):
+        from LapForge.tools.section_generator import prepare_data
+        session_id = request.args.get("session_id")
+        if not session_id:
+            return jsonify({"error": "session_id required"}), 400
+        sess = store.get_session(session_id)
+        if not sess or not isinstance(sess.parsed_data, dict):
+            return jsonify({"error": "Session not found or not processed"}), 404
+        result = prepare_data(sess.parsed_data)
+        if not result.get("has_data"):
+            return jsonify({"error": "No GPS data available for section detection"}), 400
+        sections = result.get("sections", [])
+        # Persist the auto-detected sections
+        store.delete_track_sections(track_name)
+        saved = []
+        for i, raw in enumerate(sections):
+            cg = raw.get("cornerGroup") or raw.get("corner_group")
+            sec = TrackSection(
+                id=raw.get("id") or str(uuid.uuid4()),
+                track_name=track_name,
+                name=raw.get("name", f"Section {i + 1}"),
+                start_distance=float(raw.get("start_distance", 0)),
+                end_distance=float(raw.get("end_distance", 0)),
+                section_type=raw.get("section_type", "auto"),
+                sort_order=i,
+                corner_group=int(cg) if cg is not None else None,
+            )
+            store.add_track_section(sec)
+            saved.append(sec.to_dict())
+        return jsonify(saved)
+
     @app.route("/api/sections/<track_name>/<section_id>", methods=["DELETE"])
     def api_delete_section(track_name: str, section_id: str):
         store.delete_track_section(section_id)
@@ -1456,11 +1499,39 @@ def create_app() -> Flask:
 
             dashboard_data = _build_dashboard_data(sd, session, store)
 
+        # Build a session_summary with key metadata for the info panel
+        session_summary: dict[str, Any] = {}
+        if is_v2 and session.parsed_data:
+            sb = session.parsed_data.get("summary") or {}
+            session_summary = {
+                "lap_count": sb.get("lap_count"),
+                "fastest_lap_time": sb.get("fastest_lap_time"),
+                "fastest_lap_index": sb.get("fastest_lap_index"),
+                "has_gps": sb.get("has_gps", False),
+                "channel_count": len(sb.get("channel_list") or []),
+                "available_categories": sb.get("available_categories") or [],
+                "sample_count": len(session.parsed_data.get("times") or []),
+                "duration_s": None,
+            }
+            times = session.parsed_data.get("times") or session.parsed_data.get("full_times") or []
+            if times:
+                session_summary["duration_s"] = round(times[-1] - times[0], 2) if len(times) > 1 else 0
+            outing_meta = session.parsed_data.get("file_metadata") or {}
+            if not outing_meta:
+                fp_check = _resolve_fp(session)
+                if fp_check and fp_check.exists():
+                    try:
+                        outing_meta = read_file_metadata(str(fp_check))
+                    except Exception:
+                        outing_meta = {}
+            session_summary["file_metadata"] = outing_meta
+
         return jsonify({
             "session": session.to_dict(),
             "summary": summary,
             "chart_data": chart_data,
             "dashboard_data": dashboard_data,
+            "session_summary": session_summary,
             "available_tools": available_tools,
             "tool_data": tool_data,
             "tire_set": tire_set.to_dict() if tire_set else None,

@@ -68,11 +68,24 @@ export interface SessionSummary {
 }
 
 // Session Detail
+export interface SessionSummaryInfo {
+  lap_count?: number;
+  fastest_lap_time?: number;
+  fastest_lap_index?: number;
+  has_gps?: boolean;
+  channel_count?: number;
+  available_categories?: string[];
+  sample_count?: number;
+  duration_s?: number | null;
+  file_metadata?: Record<string, string>;
+}
+
 export interface SessionDetailResponse {
   session: Record<string, unknown>;
   summary: Record<string, unknown> | null;
   chart_data: Record<string, unknown> | null;
   dashboard_data: Record<string, unknown> | null;
+  session_summary?: SessionSummaryInfo;
   available_tools: string[];
   tool_data: Record<string, unknown> | null;
   tire_set: TireSet | null;

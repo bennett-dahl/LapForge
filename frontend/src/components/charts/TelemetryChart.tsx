@@ -38,7 +38,11 @@ export interface TelemetryChartProps {
   onBoundaryDrag?: (sectionIdx: number, edge: 'start' | 'end', value: number) => void;
   yOverrides?: Record<string, { min?: number; max?: number }>;
   yScaleTitles?: Record<string, string>;
+  yAxisColors?: Record<string, string>;
   distanceDisplayUnit?: DistanceUnit;
+  onUserZoom?: () => void;
+  /** Disable click-to-pin cursor behaviour (useful when clicks are used for boundary drag). */
+  disableClickPin?: boolean;
 }
 
 export default function TelemetryChart({
@@ -51,14 +55,23 @@ export default function TelemetryChart({
   height,
   xCursorField: explicitField,
   xRange = null,
+  onBoundaryDrag,
   yOverrides,
   yScaleTitles,
+  yAxisColors,
   distanceDisplayUnit,
+  onUserZoom,
+  disableClickPin = false,
 }: TelemetryChartProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<ChartJS<'line'> | null>(null);
   const cursorXRef = useRef<number | null>(null);
   const isSyncingRef = useRef(false);
+
+  const onBoundaryDragRef = useRef(onBoundaryDrag);
+  onBoundaryDragRef.current = onBoundaryDrag;
+  const sectionsRef = useRef(sections);
+  sectionsRef.current = sections;
 
   const {
     xMin,
@@ -70,6 +83,7 @@ export default function TelemetryChart({
   } = useCursorZoom();
 
   const store = useCursorStore();
+  const pinnedRef = useRef(false);
 
   const xCursorField = useMemo(() => {
     if (explicitField) return explicitField;
@@ -122,12 +136,13 @@ export default function TelemetryChart({
       const ov = yOverrides?.[id];
       const pos = i % 2 === 0 ? 'left' : 'right';
       const yTitle = yScaleTitles?.[id];
+      const axisColor = yAxisColors?.[id] ?? TICK_COLOR;
       scales[id] = {
         type: 'linear' as const,
         position: pos,
-        ticks: { color: TICK_COLOR },
+        ticks: { color: axisColor },
         title: yTitle
-          ? { display: true, text: yTitle, color: TICK_COLOR, font: { size: 11 } }
+          ? { display: true, text: yTitle, color: axisColor, font: { size: 11 } }
           : { display: false },
         grid: {
           color: MUTED_GRID,
@@ -138,7 +153,7 @@ export default function TelemetryChart({
       };
     });
     return scales;
-  }, [yAxisIdsOrdered, yOverrides, yScaleTitles]);
+  }, [yAxisIdsOrdered, yOverrides, yScaleTitles, yAxisColors]);
 
   const annotations = useMemo((): Record<string, AnnotationOptions> => {
     const a: Record<string, AnnotationOptions> = {};
@@ -150,6 +165,15 @@ export default function TelemetryChart({
         borderColor: 'rgba(250,204,21,0.35)',
         borderWidth: 1,
         borderDash: [4, 3],
+        label: {
+          display: true,
+          content: `L${i + 2}`,
+          position: 'end' as const,
+          backgroundColor: 'transparent',
+          color: 'rgba(250,204,21,0.4)',
+          font: { size: 8 },
+          padding: { top: 1, bottom: 1, left: 2, right: 2 },
+        },
       };
     });
     sections.forEach((s, i) => {
@@ -202,6 +226,68 @@ export default function TelemetryChart({
     },
   }).current;
 
+  const dragStateRef = useRef<{
+    active: boolean;
+    secIdx: number;
+    edge: 'start' | 'end';
+    startPx: number;
+  } | null>(null);
+
+  const boundaryDragPlugin = useRef<Plugin<'line'>>({
+    id: 'sectionBoundaryDrag',
+    afterEvent(chart, args) {
+      const cb = onBoundaryDragRef.current;
+      if (!cb) return;
+      const evt = args.event;
+      const xScale = chart.scales['x'];
+      if (!xScale) return;
+      const secs = sectionsRef.current;
+      const HIT_PX = 6;
+
+      function findBoundary(px: number): { secIdx: number; edge: 'start' | 'end' } | null {
+        for (let i = 0; i < secs.length; i++) {
+          const s = secs[i];
+          const startPx = xScale.getPixelForValue(s.start);
+          const endPx = xScale.getPixelForValue(s.end);
+          if (Math.abs(px - startPx) <= HIT_PX) return { secIdx: i, edge: 'start' };
+          if (Math.abs(px - endPx) <= HIT_PX) return { secIdx: i, edge: 'end' };
+        }
+        return null;
+      }
+
+      const x = evt.x ?? 0;
+      const drag = dragStateRef.current;
+
+      if (evt.type === 'mousemove') {
+        if (drag?.active) {
+          const val = xScale.getValueForPixel(x);
+          if (val != null) cb(drag.secIdx, drag.edge, val);
+          return;
+        }
+        const hit = findBoundary(x);
+        chart.canvas.style.cursor = hit ? 'col-resize' : '';
+      }
+
+      if (evt.type === 'mousedown') {
+        const hit = findBoundary(x);
+        if (hit) {
+          dragStateRef.current = { active: true, ...hit, startPx: x };
+          const zoomPlugin = (chart.options.plugins as Record<string, unknown>)?.zoom as Record<string, Record<string, unknown>> | undefined;
+          if (zoomPlugin?.pan) zoomPlugin.pan.enabled = false;
+        }
+      }
+
+      if (evt.type === 'mouseup' || evt.type === 'mouseout') {
+        if (drag?.active) {
+          dragStateRef.current = null;
+          chart.canvas.style.cursor = '';
+          const zoomPlugin = (chart.options.plugins as Record<string, unknown>)?.zoom as Record<string, Record<string, unknown>> | undefined;
+          if (zoomPlugin?.pan) zoomPlugin.pan.enabled = true;
+        }
+      }
+    },
+  }).current;
+
   useEffect(() => {
     return store.subscribe(() => {
       const s = store.getSnapshot();
@@ -213,6 +299,8 @@ export default function TelemetryChart({
 
   const onHoverRef = useRef<(event: unknown, elements: unknown[], chart: ChartJS) => void>(undefined);
   const syncRangeRef = useRef<(chart: ChartJS<'line'>) => void>(undefined);
+  const onUserZoomRef = useRef(onUserZoom);
+  onUserZoomRef.current = onUserZoom;
 
   const syncRangeFromChart = useCallback(
     (chart: ChartJS<'line'>) => {
@@ -236,6 +324,7 @@ export default function TelemetryChart({
   syncRangeRef.current = syncRangeFromChart;
 
   const onHover = useCallback((_event: unknown, _elements: unknown[], chart: ChartJS) => {
+    if (isSyncingRef.current) return;
     const area = chart.chartArea;
     const xScale = chart.scales['x'];
     if (!xScale || !area) return;
@@ -253,23 +342,51 @@ export default function TelemetryChart({
   }, [setCursor, clearCursor, xCursorField]);
   onHoverRef.current = onHover;
 
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    if (disableClickPin) return;
+    const chart = chartRef.current;
+    if (!chart) return;
+    if (store.isPinned()) {
+      store.unpinCursor();
+      pinnedRef.current = false;
+      return;
+    }
+    const area = chart.chartArea;
+    const xScale = chart.scales['x'];
+    if (!xScale || !area) return;
+    const rect = chart.canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    if (mx < area.left || mx > area.right) return;
+    const val = xScale.getValueForPixel(mx);
+    if (val == null) return;
+    store.pinCursor({ [xCursorField]: val });
+    pinnedRef.current = true;
+  }, [store, xCursorField, disableClickPin]);
+
   const handleDoubleClick = useCallback(() => {
     const chart = chartRef.current;
     if (!chart) return;
+    if (store.isPinned()) {
+      store.unpinCursor();
+      pinnedRef.current = false;
+    }
     chart.resetZoom();
     resetSharedZoom();
-  }, [resetSharedZoom]);
+    onUserZoomRef.current?.();
+  }, [resetSharedZoom, store]);
 
   // Apply shared zoom from context
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const targetMin = xRange?.min ?? xMin;
-    const targetMax = xRange?.max ?? xMax;
+    const targetMin = xMin;
+    const targetMax = xMax;
     if (targetMin == null && targetMax == null) {
-      isSyncingRef.current = true;
-      try { chart.resetZoom('none'); } catch { /* already reset */ }
-      isSyncingRef.current = false;
+      if (!xRange) {
+        isSyncingRef.current = true;
+        try { chart.resetZoom('none'); } catch { /* already reset */ }
+        isSyncingRef.current = false;
+      }
       return;
     }
     const xScale = chart.scales.x;
@@ -293,7 +410,7 @@ export default function TelemetryChart({
       }, 'none');
     } catch { /* guard against chart being in transition */ }
     isSyncingRef.current = false;
-  }, [xMin, xMax, xRange, xValues]);
+  }, [xMin, xMax, xValues, xRange]);
 
   const options = useMemo<ChartOptions<'line'>>(() => ({
     responsive: true,
@@ -311,6 +428,7 @@ export default function TelemetryChart({
           ...(distanceTickFormat ? { callback: distanceTickFormat } : {}),
         },
         grid: { color: MUTED_GRID },
+        ...(xRange ? { min: xRange.min, max: xRange.max } : {}),
       },
       ...yScales,
     } as ChartOptions<'line'>['scales'],
@@ -324,15 +442,17 @@ export default function TelemetryChart({
           mode: 'x',
           onPanComplete: ({ chart }) => {
             syncRangeRef.current?.(chart as ChartJS<'line'>);
+            onUserZoomRef.current?.();
           },
         },
         zoom: {
-          wheel: { enabled: true },
+          wheel: { enabled: true, modifierKey: 'ctrl' },
           pinch: { enabled: true },
           mode: 'x',
           onZoom: ({ chart, trigger }) => {
             if (trigger === 'api') return;
             syncRangeRef.current?.(chart as ChartJS<'line'>);
+            onUserZoomRef.current?.();
           },
         },
       },
@@ -343,6 +463,7 @@ export default function TelemetryChart({
     channels.length,
     yScales,
     distanceTickFormat,
+    xRange,
   ]);
 
   const chartData = useMemo<ChartData<'line'>>(() => ({
@@ -353,11 +474,13 @@ export default function TelemetryChart({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const plugins: Plugin<'line'>[] = [crosshairPlugin];
+    if (onBoundaryDragRef.current) plugins.push(boundaryDragPlugin);
     const chart = new ChartJS<'line'>(canvas, {
       type: 'line',
       data: chartData,
       options,
-      plugins: [crosshairPlugin],
+      plugins,
     });
     chartRef.current = chart;
     return () => {
@@ -372,21 +495,36 @@ export default function TelemetryChart({
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
+    isSyncingRef.current = true;
     chart.data = chartData;
     chart.update('none');
+    isSyncingRef.current = false;
   }, [chartData]);
 
   // Update options when they change (annotations, yScales, etc.)
+  // Preserve X-axis zoom across options updates so Y-axis changes don't reset zoom.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
+    const xScale = chart.scales.x;
+    const hadZoom = xScale && Number.isFinite(xScale.min) && Number.isFinite(xScale.max);
+    const prevMin = xScale?.min;
+    const prevMax = xScale?.max;
+    isSyncingRef.current = true;
     chart.options = options;
     chart.update('none');
+    if (hadZoom && prevMin != null && prevMax != null) {
+      try {
+        chart.zoomScale('x', { min: prevMin, max: prevMax }, 'none');
+      } catch { /* guard */ }
+    }
+    isSyncingRef.current = false;
   }, [options]);
 
   return (
     <div className="telemetry-chart" style={{ width: '100%', height: height ?? '100%' }}
-      onMouseLeave={() => clearCursor()}
+      onMouseLeave={() => { if (!store.isPinned()) clearCursor(); }}
+      onClick={handleClick}
       onDoubleClick={handleDoubleClick}
     >
       <canvas ref={canvasRef} />

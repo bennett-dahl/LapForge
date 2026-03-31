@@ -6,11 +6,15 @@ interface CursorState {
   mapDistance: number | null;
   xMin: number | null;
   xMax: number | null;
+  pinned: boolean;
 }
 
 interface CursorSyncAPI {
   setCursor: (state: Partial<Pick<CursorState, 'distance' | 'time' | 'mapDistance'>>) => void;
   clearCursor: () => void;
+  pinCursor: (state: Partial<Pick<CursorState, 'distance' | 'time' | 'mapDistance'>>) => void;
+  unpinCursor: () => void;
+  isPinned: () => boolean;
   setXRange: (min: number | null, max: number | null) => void;
   resetZoom: () => void;
   subscribe: (fn: () => void) => () => void;
@@ -27,6 +31,7 @@ const initialState = (): CursorState => ({
   ...EMPTY_CURSOR,
   xMin: null,
   xMax: null,
+  pinned: false,
 });
 
 function createCursorSyncStore(): CursorSyncAPI {
@@ -39,12 +44,25 @@ function createCursorSyncStore(): CursorSyncAPI {
 
   return {
     setCursor(partial) {
+      if (state.pinned) return;
       state = { ...state, ...partial };
       notify();
     },
     clearCursor() {
+      if (state.pinned) return;
       state = { ...state, ...EMPTY_CURSOR };
       notify();
+    },
+    pinCursor(partial) {
+      state = { ...state, ...partial, pinned: true };
+      notify();
+    },
+    unpinCursor() {
+      state = { ...state, ...EMPTY_CURSOR, pinned: false };
+      notify();
+    },
+    isPinned() {
+      return state.pinned;
     },
     setXRange(min, max) {
       state = { ...state, xMin: min, xMax: max };

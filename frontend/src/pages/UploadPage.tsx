@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet, apiUploadWithProgress } from '../api/client';
 import { useUploadProgress } from '../contexts/UploadProgressContext';
@@ -28,6 +29,7 @@ function strMeta(v: string | number | undefined): string {
 }
 
 export default function UploadPage() {
+  const navigate = useNavigate();
   const uploadProgress = useUploadProgress();
 
   useEffect(() => {
@@ -158,12 +160,12 @@ export default function UploadPage() {
       setTaskStatus(status);
       if (status.done && status.redirect) {
         const sessionId = status.redirect.replace('/sessions/', '');
-        window.location.href = `/sessions/${sessionId}`;
+        navigate(`/sessions/${sessionId}`);
       }
     } catch {
       // poll will retry
     }
-  }, [taskId]);
+  }, [taskId, navigate]);
 
   useEffect(() => {
     if (!taskId) return;
