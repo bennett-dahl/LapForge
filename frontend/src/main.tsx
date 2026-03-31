@@ -27,7 +27,7 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename="/static/spa">
+      <BrowserRouter basename={import.meta.env.DEV ? '/static/spa' : ''}>
         <App />
       </BrowserRouter>
     </QueryClientProvider>
