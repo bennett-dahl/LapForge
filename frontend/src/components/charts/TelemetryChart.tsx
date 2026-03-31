@@ -235,14 +235,14 @@ export default function TelemetryChart({
 
   const boundaryDragPlugin = useRef<Plugin<'line'>>({
     id: 'sectionBoundaryDrag',
-    afterEvent(chart, args) {
+    beforeEvent(chart, args) {
       const cb = onBoundaryDragRef.current;
       if (!cb) return;
       const evt = args.event;
       const xScale = chart.scales['x'];
       if (!xScale) return;
       const secs = sectionsRef.current;
-      const HIT_PX = 6;
+      const HIT_PX = 8;
 
       function findBoundary(px: number): { secIdx: number; edge: 'start' | 'end' } | null {
         for (let i = 0; i < secs.length; i++) {
@@ -262,7 +262,8 @@ export default function TelemetryChart({
         if (drag?.active) {
           const val = xScale.getValueForPixel(x);
           if (val != null) cb(drag.secIdx, drag.edge, val);
-          return;
+          args.changed = false;
+          return false;
         }
         const hit = findBoundary(x);
         chart.canvas.style.cursor = hit ? 'col-resize' : '';
@@ -272,8 +273,8 @@ export default function TelemetryChart({
         const hit = findBoundary(x);
         if (hit) {
           dragStateRef.current = { active: true, ...hit, startPx: x };
-          const zoomPlugin = (chart.options.plugins as Record<string, unknown>)?.zoom as Record<string, Record<string, unknown>> | undefined;
-          if (zoomPlugin?.pan) zoomPlugin.pan.enabled = false;
+          args.changed = false;
+          return false;
         }
       }
 
@@ -281,8 +282,8 @@ export default function TelemetryChart({
         if (drag?.active) {
           dragStateRef.current = null;
           chart.canvas.style.cursor = '';
-          const zoomPlugin = (chart.options.plugins as Record<string, unknown>)?.zoom as Record<string, Record<string, unknown>> | undefined;
-          if (zoomPlugin?.pan) zoomPlugin.pan.enabled = true;
+          args.changed = false;
+          return false;
         }
       }
     },
