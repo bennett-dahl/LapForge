@@ -3,6 +3,7 @@ export interface ElectronUpdateStatusPayload {
   version?: string;
   percent?: number;
   message?: string;
+  userInitiated?: boolean;
 }
 
 export interface ElectronAPI {

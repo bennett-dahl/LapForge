@@ -27,9 +27,18 @@ let userInitiatedCheck = false;
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
 
+const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000; // re-check every 4 hours
+
 function log(msg) {
   const ts = new Date().toISOString();
   console.log(`[${ts}] ${msg}`);
+}
+
+function sendUpdateStatus(status, data = {}) {
+  lastUpdateStatus = { status, ...data };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', lastUpdateStatus);
+  }
 }
 
 function initAutoUpdater() {
@@ -42,81 +51,56 @@ function initAutoUpdater() {
 
   autoUpdater.on('checking-for-update', () => {
     log('Updater: checking for update...');
-    sendUpdateStatus('checking');
+    sendUpdateStatus('checking', { userInitiated: userInitiatedCheck });
   });
 
   autoUpdater.on('update-available', (info) => {
     log(`Updater: update available — v${info.version}`);
+    sendUpdateStatus('available', { version: info.version, userInitiated: userInitiatedCheck });
     userInitiatedCheck = false;
-    sendUpdateStatus('available', { version: info.version });
   });
 
-  autoUpdater.on('update-not-available', (info) => {
+  autoUpdater.on('update-not-available', () => {
     log(`Updater: up to date (current: v${APP_VERSION})`);
-    sendUpdateStatus('not-available');
-    if (userInitiatedCheck) {
-      userInitiatedCheck = false;
-      dialog.showMessageBox(mainWindow || null, {
-        type: 'info',
-        title: 'No Updates',
-        message: 'You\'re up to date',
-        detail: `LapForge v${APP_VERSION} is the latest version.`,
-      });
-    }
+    sendUpdateStatus('not-available', { userInitiated: userInitiatedCheck });
+    userInitiatedCheck = false;
   });
 
   autoUpdater.on('download-progress', (progress) => {
     log(`Updater: downloading ${Math.round(progress.percent)}%`);
-    sendUpdateStatus('downloading', { percent: Math.round(progress.percent) });
+    sendUpdateStatus('downloading', { percent: Math.round(progress.percent), userInitiated: false });
   });
 
   autoUpdater.on('update-downloaded', (info) => {
     log(`Updater: v${info.version} downloaded, ready to install`);
-    sendUpdateStatus('ready', { version: info.version });
-    dialog.showMessageBox(mainWindow || null, {
-      type: 'info',
-      title: 'Update Ready',
-      message: `Update v${info.version} is ready to install`,
-      detail: 'LapForge will restart to apply the update.',
-      buttons: ['Restart Now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-    }).then(({ response }) => {
-      if (response === 0) {
-        autoUpdater.quitAndInstall(false, true);
-      }
-    });
+    // Notify the renderer toast only — no native dialog.
+    sendUpdateStatus('ready', { version: info.version, userInitiated: false });
   });
 
   autoUpdater.on('error', (err) => {
     log(`Updater error: ${err?.message || err}`);
-    sendUpdateStatus('error', { message: err?.message || 'Unknown error' });
-    if (userInitiatedCheck) {
-      userInitiatedCheck = false;
-      dialog.showMessageBox(mainWindow || null, {
-        type: 'error',
-        title: 'Update Error',
-        message: 'Failed to check for updates',
-        detail: err?.message || 'Unknown error',
-      });
-    }
+    sendUpdateStatus('error', { message: err?.message || 'Unknown error', userInitiated: userInitiatedCheck });
+    userInitiatedCheck = false;
   });
 
   log(`Updater: checking for updates (current: v${APP_VERSION})`);
   autoUpdater.checkForUpdates().catch((err) => {
     log(`Updater: checkForUpdates failed — ${err?.message || err}`);
   });
-}
 
-function sendUpdateStatus(status, data = {}) {
-  lastUpdateStatus = { status, ...data };
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('update-status', lastUpdateStatus);
-  }
+  // Periodic background check.
+  setInterval(() => {
+    log('Updater: periodic background check');
+    autoUpdater.checkForUpdates().catch((err) => {
+      log(`Updater: periodic check failed — ${err?.message || err}`);
+    });
+  }, UPDATE_INTERVAL_MS);
 }
 
 ipcMain.on('install-update', () => {
-  autoUpdater.quitAndInstall(false, true);
+  // isSilent=true: NSIS installer runs without showing its UI.
+  // isForceRunAfter=true: app relaunches automatically after install.
+  autoUpdater.quitAndInstall(true, true);
 });
 
 ipcMain.on('check-for-updates', () => {

@@ -2,28 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import Button from './Button';
 import type { ElectronUpdateStatusPayload } from '../../types/electron-api';
 
-type DisplayKind =
-  | 'checking'
-  | 'available'
-  | 'download-progress'
-  | 'downloaded'
-  | 'not-available'
-  | 'error';
-
-function toDisplayKind(data: ElectronUpdateStatusPayload): DisplayKind {
-  const s = data.status;
-  if (s === 'downloading' || s === 'download-progress') return 'download-progress';
-  if (s === 'ready' || s === 'downloaded') return 'downloaded';
-  if (s === 'checking') return 'checking';
-  if (s === 'available') return 'available';
-  if (s === 'not-available') return 'not-available';
-  if (s === 'error') return 'error';
-  return 'error';
-}
-
 export default function ElectronUpdateToast() {
   const [payload, setPayload] = useState<ElectronUpdateStatusPayload | null>(null);
-  const [readyDismissed, setReadyDismissed] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -31,30 +12,36 @@ export default function ElectronUpdateToast() {
     if (!api?.onUpdateStatus) return;
 
     api.onUpdateStatus((data) => {
-      setReadyDismissed(false);
+      // Reset dismissed state when a new status arrives that isn't a repeat
+      // of the same "ready" state (so "Later" persists until next download).
+      if (data.status !== 'ready') setDismissed(false);
       setPayload(data);
     });
+
     api.requestLastUpdateStatus?.();
   }, []);
 
+  // Auto-dismiss transient statuses.
   useEffect(() => {
-    if (!payload) return;
-    const kind = toDisplayKind(payload);
     if (dismissTimerRef.current) {
       clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = null;
     }
-    if (kind === 'not-available') {
+    if (!payload) return;
+
+    const autoHide =
+      payload.status === 'not-available' ||
+      payload.status === 'checking' ||
+      payload.status === 'error';
+
+    if (autoHide) {
+      const delay = payload.status === 'error' ? 6000 : 3000;
       dismissTimerRef.current = setTimeout(() => {
         setPayload(null);
         dismissTimerRef.current = null;
-      }, 3000);
-    } else if (kind === 'error') {
-      dismissTimerRef.current = setTimeout(() => {
-        setPayload(null);
-        dismissTimerRef.current = null;
-      }, 5000);
+      }, delay);
     }
+
     return () => {
       if (dismissTimerRef.current) {
         clearTimeout(dismissTimerRef.current);
@@ -65,16 +52,30 @@ export default function ElectronUpdateToast() {
 
   const api = window.electronAPI;
   if (!api) return null;
-
   if (!payload) return null;
 
-  const kind = toDisplayKind(payload);
-  if (kind === 'downloaded' && readyDismissed) return null;
+  const { status, userInitiated, percent, version } = payload;
+
+  // For background (non-user-initiated) checks, only surface the toast once
+  // the update is fully downloaded and ready to install.
+  const isBackground = !userInitiated;
+  if (isBackground && status !== 'ready') return null;
+
+  // User dismissed the "ready" toast -- hide until next download.
+  if (status === 'ready' && dismissed) return null;
 
   const pct =
-    typeof payload.percent === 'number' && Number.isFinite(payload.percent)
-      ? Math.min(100, Math.max(0, payload.percent))
+    typeof percent === 'number' && Number.isFinite(percent)
+      ? Math.min(100, Math.max(0, percent))
       : 0;
+
+  let kind: 'checking' | 'available' | 'downloading' | 'ready' | 'not-available' | 'error';
+  if (status === 'checking') kind = 'checking';
+  else if (status === 'available') kind = 'available';
+  else if (status === 'downloading' || status === 'download-progress') kind = 'downloading';
+  else if (status === 'ready' || status === 'downloaded') kind = 'ready';
+  else if (status === 'not-available') kind = 'not-available';
+  else kind = 'error';
 
   return (
     <div
@@ -83,24 +84,32 @@ export default function ElectronUpdateToast() {
       aria-live="polite"
     >
       <div className="electron-update-toast-inner">
-        {kind === 'checking' && <span className="electron-update-toast-msg">Checking for updates...</span>}
-
-        {kind === 'available' && (
-          <span className="electron-update-toast-msg">Update available, downloading...</span>
+        {kind === 'checking' && (
+          <span className="electron-update-toast-msg">Checking for updates...</span>
         )}
 
-        {kind === 'download-progress' && (
+        {kind === 'available' && (
+          <span className="electron-update-toast-msg">
+            Update {version ? `v${version} ` : ''}available, downloading...
+          </span>
+        )}
+
+        {kind === 'downloading' && (
           <div className="electron-update-toast-progress-wrap">
-            <span className="electron-update-toast-msg">Downloading update… {pct}%</span>
+            <span className="electron-update-toast-msg">
+              Downloading update{pct > 0 ? ` ${pct}%` : '...'}
+            </span>
             <div className="electron-update-toast-bar" aria-hidden>
               <div className="electron-update-toast-bar-fill" style={{ width: `${pct}%` }} />
             </div>
           </div>
         )}
 
-        {kind === 'downloaded' && (
+        {kind === 'ready' && (
           <>
-            <span className="electron-update-toast-msg">Update ready! Restart to install.</span>
+            <span className="electron-update-toast-msg">
+              {version ? `v${version} ` : 'Update '}ready to install.
+            </span>
             <div className="electron-update-toast-actions">
               <Button
                 type="button"
@@ -108,9 +117,14 @@ export default function ElectronUpdateToast() {
                 variant="primary"
                 onClick={() => window.electronAPI?.installUpdate()}
               >
-                Restart
+                Restart Now
               </Button>
-              <Button type="button" size="sm" variant="secondary" onClick={() => setReadyDismissed(true)}>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => setDismissed(true)}
+              >
                 Later
               </Button>
             </div>
@@ -122,7 +136,9 @@ export default function ElectronUpdateToast() {
         )}
 
         {kind === 'error' && (
-          <span className="electron-update-toast-msg">Update check failed</span>
+          <span className="electron-update-toast-msg">
+            Update check failed{payload.message ? `: ${payload.message}` : '.'}
+          </span>
         )}
       </div>
     </div>
