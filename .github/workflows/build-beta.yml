@@ -1,0 +1,86 @@
+name: Build & Release (Beta)
+
+on:
+  push:
+    tags:
+      - 'v*-beta*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-beta:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit and integration tests
+        run: |
+          python -m pytest tests/ --ignore=tests/e2e -v --tb=short --cov=LapForge --cov-report=term-missing --cov-fail-under=50
+
+      - name: Build React SPA
+        run: |
+          npm ci
+          npm run build:spa
+        working-directory: frontend
+
+      - name: Inject build defaults
+        run: |
+          echo '{"GOOGLE_CLIENT_ID":"${{ secrets.GOOGLE_CLIENT_ID }}","GOOGLE_CLIENT_SECRET":"${{ secrets.GOOGLE_CLIENT_SECRET }}"}' > LapForge/_build_defaults.json
+        shell: bash
+
+      - name: Patch electron/package.json for beta
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          $pkg = Get-Content electron/package.json | ConvertFrom-Json
+          $pkg.name = "lapforge-beta"
+          $pkg.version = $version
+          $pkg.build.appId = "com.lapforge.beta"
+          $pkg.build.productName = "LapForge Beta"
+          $pkg.build.nsis.shortcutName = "LapForge Beta"
+          $pkg.build.publish[0].releaseType = "prerelease"
+          $pkg | ConvertTo-Json -Depth 10 | Set-Content electron/package.json
+        shell: pwsh
+
+      - name: Patch PyInstaller spec for beta exe name
+        run: |
+          (Get-Content LapForge.spec) -replace "name='LapForge'", "name='LapForgeBeta'" | Set-Content LapForge.spec
+        shell: pwsh
+
+      - name: Freeze Python backend
+        run: python -m PyInstaller --clean --noconfirm LapForge.spec
+
+      - name: Verify backend output
+        run: |
+          if (!(Test-Path "dist/backend/LapForgeBeta.exe")) {
+            Write-Error "Beta backend executable not found"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Install Electron dependencies
+        run: npm ci
+        working-directory: electron
+
+      - name: Build Electron installer (Beta)
+        run: npx electron-builder --win --publish always
+        working-directory: electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,6 +6,13 @@ const { autoUpdater } = require('electron-updater');
 
 const IS_DEV = process.argv.includes('--dev');
 const APP_VERSION = require('./package.json').version;
+const IS_BETA = require('./package.json').name === 'lapforge-beta';
+
+// Beta builds use a separate user-data directory so stable and beta
+// databases/settings never collide on the same machine.
+if (IS_BETA) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'LapForge Beta'));
+}
 
 let mainWindow = null;
 let splashWindow = null;
