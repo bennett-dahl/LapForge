@@ -224,13 +224,12 @@ ipcMain.on('show-about', () => showAboutDialog());
 
 function getBackendPath() {
   if (IS_DEV) return null;
-  const isPacked = app.isPackaged;
-  if (isPacked) {
-    return path.join(process.resourcesPath, 'backend', 'LapForge.exe');
+  const exeName = IS_BETA ? 'LapForgeBeta.exe' : 'LapForge.exe';
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'backend', exeName);
   }
   // Running from source (npx electron .) — look in project dist/
-  const localBackend = path.join(__dirname, '..', 'dist', 'backend', 'LapForge.exe');
-  return localBackend;
+  return path.join(__dirname, '..', 'dist', 'backend', exeName);
 }
 
 function createSplashWindow() {
