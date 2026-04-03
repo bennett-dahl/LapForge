@@ -264,90 +264,20 @@ export default function TelemetryChart({
       const x = evt.x ?? 0;
       const drag = dragStateRef.current;
 
+      if (drag?.active) {
+        args.changed = false;
+        return false;
+      }
+
       if (evt.type === 'mousemove') {
-        if (drag?.active) {
-          const val = xScale.getValueForPixel(x);
-          if (val != null) cb(drag.secIdx, drag.edge, val);
-          args.changed = false;
-          return false;
-        }
         const hit = findBoundaryAtPx(chart, x);
         chart.canvas.style.cursor = hit ? 'col-resize' : '';
-      }
-
-      if (evt.type === 'mousedown') {
-        const hit = findBoundaryAtPx(chart, x);
-        if (hit) {
-          dragStateRef.current = { active: true, ...hit, startPx: x };
-          args.changed = false;
-          return false;
-        }
-      }
-
-      if (evt.type === 'mouseup' || evt.type === 'mouseout') {
-        if (drag?.active) {
-          dragStateRef.current = null;
-          chart.canvas.style.cursor = '';
-          args.changed = false;
-          return false;
-        }
       }
     },
   }).current;
 
-  // Native pointer listeners to intercept events before Hammer.js (used by chartjs-plugin-zoom)
-  // Hammer.js adds its own DOM listeners, so Chart.js plugin hooks can't block pan.
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !onBoundaryDragRef.current) return;
-
-    const onPointerDown = (e: PointerEvent) => {
-      const chart = chartRef.current;
-      if (!chart) return;
-      const rect = canvas.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const hit = findBoundaryAtPx(chart, px);
-      if (hit) {
-        dragStateRef.current = { active: true, ...hit, startPx: px };
-        canvas.setPointerCapture(e.pointerId);
-        e.stopImmediatePropagation();
-        e.preventDefault();
-      }
-    };
-
-    const onPointerMove = (e: PointerEvent) => {
-      const chart = chartRef.current;
-      const drag = dragStateRef.current;
-      if (!chart || !drag?.active) return;
-      const xScale = chart.scales['x'];
-      if (!xScale) return;
-      const rect = canvas.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const val = xScale.getValueForPixel(px);
-      if (val != null) onBoundaryDragRef.current?.(drag.secIdx, drag.edge, val);
-      e.stopImmediatePropagation();
-      e.preventDefault();
-    };
-
-    const onPointerUp = (e: PointerEvent) => {
-      if (dragStateRef.current?.active) {
-        dragStateRef.current = null;
-        canvas.style.cursor = '';
-        canvas.releasePointerCapture(e.pointerId);
-        e.stopImmediatePropagation();
-        e.preventDefault();
-      }
-    };
-
-    canvas.addEventListener('pointerdown', onPointerDown);
-    canvas.addEventListener('pointermove', onPointerMove);
-    canvas.addEventListener('pointerup', onPointerUp);
-    return () => {
-      canvas.removeEventListener('pointerdown', onPointerDown);
-      canvas.removeEventListener('pointermove', onPointerMove);
-      canvas.removeEventListener('pointerup', onPointerUp);
-    };
-  }, [findBoundaryAtPx]);
+  // Ref holds the cleanup function for native pointer handlers registered before Chart.js
+  const pointerCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     return store.subscribe(() => {
@@ -535,9 +465,73 @@ export default function TelemetryChart({
   }), [datasets]);
 
   // Create chart imperatively on mount -- no react-chartjs-2
+  // Native pointer handlers are registered BEFORE Chart.js so that
+  // stopImmediatePropagation blocks Hammer.js (zoom-plugin) from seeing
+  // boundary-drag events.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    // --- Register native pointer handlers FIRST (before Chart.js adds its own) ---
+    if (onBoundaryDragRef.current) {
+      const onPointerDown = (e: PointerEvent) => {
+        const chart = chartRef.current;
+        if (!chart) return;
+        const rect = canvas.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const hit = findBoundaryAtPx(chart, px);
+        if (hit) {
+          dragStateRef.current = { active: true, ...hit, startPx: px };
+          canvas.setPointerCapture(e.pointerId);
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      };
+
+      const onPointerMove = (e: PointerEvent) => {
+        const chart = chartRef.current;
+        const drag = dragStateRef.current;
+        if (!chart || !drag?.active) {
+          // Show col-resize cursor when hovering a boundary (even when not dragging)
+          if (chart) {
+            const rect = canvas.getBoundingClientRect();
+            const px = e.clientX - rect.left;
+            const hit = findBoundaryAtPx(chart, px);
+            canvas.style.cursor = hit ? 'col-resize' : '';
+          }
+          return;
+        }
+        const xScale = chart.scales['x'];
+        if (!xScale) return;
+        const rect = canvas.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const val = xScale.getValueForPixel(px);
+        if (val != null) onBoundaryDragRef.current?.(drag.secIdx, drag.edge, val);
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      };
+
+      const onPointerUp = (e: PointerEvent) => {
+        if (dragStateRef.current?.active) {
+          dragStateRef.current = null;
+          canvas.style.cursor = '';
+          canvas.releasePointerCapture(e.pointerId);
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      };
+
+      canvas.addEventListener('pointerdown', onPointerDown);
+      canvas.addEventListener('pointermove', onPointerMove);
+      canvas.addEventListener('pointerup', onPointerUp);
+      pointerCleanupRef.current = () => {
+        canvas.removeEventListener('pointerdown', onPointerDown);
+        canvas.removeEventListener('pointermove', onPointerMove);
+        canvas.removeEventListener('pointerup', onPointerUp);
+      };
+    }
+
+    // --- Now create Chart.js (its internal listeners are added after ours) ---
     const plugins: Plugin<'line'>[] = [crosshairPlugin];
     if (onBoundaryDragRef.current) plugins.push(boundaryDragPlugin);
     const chart = new ChartJS<'line'>(canvas, {
@@ -548,6 +542,8 @@ export default function TelemetryChart({
     });
     chartRef.current = chart;
     return () => {
+      pointerCleanupRef.current?.();
+      pointerCleanupRef.current = null;
       chart.destroy();
       chartRef.current = null;
     };
@@ -567,9 +563,21 @@ export default function TelemetryChart({
 
   // Update options when they change (annotations, yScales, etc.)
   // Preserve X-axis zoom across options updates so Y-axis changes don't reset zoom.
+  // During an active boundary drag, only patch the annotation data to avoid a full
+  // chart update cycle that would interfere with the drag gesture.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
+
+    if (dragStateRef.current?.active) {
+      const pluginOpts = chart.options.plugins as Record<string, unknown> | undefined;
+      if (pluginOpts?.annotation) {
+        (pluginOpts.annotation as Record<string, unknown>).annotations = annotations;
+      }
+      chart.update('none');
+      return;
+    }
+
     const xScale = chart.scales.x;
     const hadZoom = xScale && Number.isFinite(xScale.min) && Number.isFinite(xScale.max);
     const prevMin = xScale?.min;
@@ -583,7 +591,7 @@ export default function TelemetryChart({
       } catch { /* guard */ }
     }
     isSyncingRef.current = false;
-  }, [options]);
+  }, [options, annotations]);
 
   return (
     <div className="telemetry-chart" style={{ width: '100%', height: height ?? '100%' }}

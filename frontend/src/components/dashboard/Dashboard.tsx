@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef, type DragEvent } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect, type DragEvent } from 'react';
 import type { DashboardModule } from '../../types/models';
 import { useCursorStore } from '../../contexts/CursorSyncContext';
 import ChartModule, { ChartYAxisHeaderButton, SMOOTH_LEVELS } from './modules/ChartModule';
@@ -58,7 +58,7 @@ export interface DashboardData {
   channels_by_category: Record<string, string[]>;
   lap_splits: number[];
   lap_split_distances: number[];
-  lap_times: { lap: number; time: number; fast?: boolean }[];
+  lap_times: { lap: number; time: number; fast?: boolean; segment_index?: number }[];
   has_distance: boolean;
   reference_lap?: number | null;
   fast_lap_index?: number | null;
@@ -72,6 +72,31 @@ export interface DashboardData {
   /** Present on comparison dashboard API payloads */
   comparison_name?: string;
   all_session_ids?: string[];
+  excluded_laps?: number[];
+  /** Segment index of GPS reference lap in processed session. */
+  reference_lap_index?: number | null;
+  /** Full-resolution time array for accurate section timing. */
+  raw_times?: number[];
+  /** Full-resolution distance array for accurate section timing. */
+  raw_distances?: number[];
+  /** Set only when user explicitly applied a map lap via PATCH. Null/undefined means auto-selected. */
+  map_lap_segment_index?: number | null;
+  /** Single-lap telemetry + GPS for the map reference lap (local distances, 0→lap_length). */
+  map_lap?: {
+    distances: number[];
+    times: number[];
+    series: Record<string, number[]>;
+    channel_meta: Record<string, { label?: string; display?: string; unit?: string; category?: string }>;
+    points: { lat: number; lng: number; distance?: number }[];
+    lap_length: number;
+    source: {
+      lap_index?: number | null;
+      lap_time?: number | null;
+      driver?: string | null;
+      car?: string | null;
+      session_name?: string | null;
+    };
+  } | null;
 }
 
 interface DashboardProps {
@@ -86,6 +111,8 @@ interface DashboardProps {
   pressureUnit?: PressureUnit;
   tempUnit?: TempUnit;
   distanceUnit?: DistanceUnit;
+  excludedLaps?: number[];
+  onToggleExcludeLap?: (segmentIndex: number) => void;
 }
 
 export default function Dashboard({
@@ -98,6 +125,8 @@ export default function Dashboard({
   pressureUnit = 'psi',
   tempUnit = 'c',
   distanceUnit = 'km',
+  excludedLaps,
+  onToggleExcludeLap,
 }: DashboardProps) {
   const cursorStore = useCursorStore();
   const setSyncedXRange = useCallback((min: number, max: number) => cursorStore.setXRange(min, max), [cursorStore]);
@@ -119,6 +148,11 @@ export default function Dashboard({
   const handleUserZoom = useCallback(() => {
     setLapRangeIdx(null);
   }, []);
+
+  useEffect(() => {
+    setLapRangeIdx(null);
+    resetSyncedZoom();
+  }, [sessionId, resetSyncedZoom]);
 
   const [layout, setLayout] = useState<DashboardModule[]>(
     () => initialLayout ?? DEFAULT_LAYOUT,
@@ -293,15 +327,17 @@ export default function Dashboard({
           return (
             <div
               key={idx}
-              draggable
               className={`dash-module ${widthClass}${dragging ? ' dragging' : ''}`}
               style={{ height: defaultModuleHeight(mod) }}
-              onDragStart={(e) => handleDragStart(e, idx)}
               onDragOver={handleDragOver}
               onDrop={(e) => handleDrop(e, idx)}
               onDragEnd={handleDragEnd}
             >
-              <div className="dash-module-header">
+              <div
+                className="dash-module-header"
+                draggable
+                onDragStart={(e) => handleDragStart(e, idx)}
+              >
                 <span className="module-title">
                   {MODULE_LABELS[mod.type] ?? mod.type}
                   {mod.type === 'chart' && mod.channels && ` — ${(mod.channels as string[]).join(', ')}`}
@@ -435,9 +471,11 @@ export default function Dashboard({
                 )}
                 {mod.type === 'map' && (
                   <MapModule
-                    points={data.points ?? []}
+                    points={data.map_lap?.points ?? data.points ?? []}
                     sections={data.sections}
                     lapSplits={data.has_distance ? data.lap_split_distances : data.lap_splits}
+                    lapSplitDistances={data.has_distance ? data.lap_split_distances : undefined}
+                    lapLength={data.map_lap?.lap_length}
                   />
                 )}
                 {mod.type === 'readout' && (
@@ -459,6 +497,8 @@ export default function Dashboard({
                     lapTimes={data.lap_times}
                     fastIdx={data.fast_lap_index ?? null}
                     onLapClick={onLapTimesRowClick}
+                    excludedLaps={excludedLaps}
+                    onToggleExcludeLap={onToggleExcludeLap}
                   />
                 )}
                 {mod.type === 'tire-summary' && (

@@ -192,11 +192,16 @@ class SessionStore:
                     except ValueError:
                         pass
 
-            # Migrate track_layouts: old schema had track_name as PK, new has id PK
             tl_cols = {
                 row[1]
                 for row in c.execute("PRAGMA table_info(track_layouts)").fetchall()
             }
+            for col_name in ("source_driver", "source_car", "source_session_name"):
+                if tl_cols and col_name not in tl_cols:
+                    c.execute(f"ALTER TABLE track_layouts ADD COLUMN {col_name} TEXT")
+                    tl_cols.add(col_name)
+
+            # Migrate track_layouts: old schema had track_name as PK, new has id PK
             if tl_cols and "id" not in tl_cols:
                 old_rows = c.execute("SELECT track_name, reference_lap_json, updated_at FROM track_layouts").fetchall()
                 c.execute("DROP TABLE track_layouts")
@@ -607,14 +612,16 @@ class SessionStore:
     def get_track_layout_by_id(self, layout_id: str) -> TrackLayout | None:
         with self._conn() as c:
             row = c.execute(
-                "SELECT id, name, track_name, source_session_id, source_lap_index, reference_lap_json, created_at FROM track_layouts WHERE id = ?",
+                "SELECT id, name, track_name, source_session_id, source_lap_index, reference_lap_json, created_at,"
+                " source_driver, source_car, source_session_name FROM track_layouts WHERE id = ?",
                 (layout_id,),
             ).fetchone()
         if not row:
             return None
         return TrackLayout(id=row[0], name=row[1], track_name=row[2],
                            source_session_id=row[3], source_lap_index=row[4],
-                           reference_lap_json=row[5] or "", created_at=row[6] or "")
+                           reference_lap_json=row[5] or "", created_at=row[6] or "",
+                           source_driver=row[7], source_car=row[8], source_session_name=row[9])
 
     def get_track_layout_ref(self, layout_id: str) -> dict | None:
         """Return the reference_lap dict for a specific layout by id."""
@@ -627,27 +634,33 @@ class SessionStore:
             return None
 
     def list_track_layouts(self, track_name: str | None = None) -> list[TrackLayout]:
+        cols = ("id, name, track_name, source_session_id, source_lap_index,"
+                " reference_lap_json, created_at, source_driver, source_car, source_session_name")
         with self._conn() as c:
             if track_name:
                 key = self.normalize_track_key(track_name)
                 rows = c.execute(
-                    "SELECT id, name, track_name, source_session_id, source_lap_index, reference_lap_json, created_at FROM track_layouts WHERE LOWER(track_name) = ? ORDER BY created_at DESC",
+                    f"SELECT {cols} FROM track_layouts WHERE LOWER(track_name) = ? ORDER BY created_at DESC",
                     (key,),
                 ).fetchall()
             else:
                 rows = c.execute(
-                    "SELECT id, name, track_name, source_session_id, source_lap_index, reference_lap_json, created_at FROM track_layouts ORDER BY track_name, created_at DESC"
+                    f"SELECT {cols} FROM track_layouts ORDER BY track_name, created_at DESC"
                 ).fetchall()
         return [
             TrackLayout(id=r[0], name=r[1], track_name=r[2],
                         source_session_id=r[3], source_lap_index=r[4],
-                        reference_lap_json=r[5] or "", created_at=r[6] or "")
+                        reference_lap_json=r[5] or "", created_at=r[6] or "",
+                        source_driver=r[7], source_car=r[8], source_session_name=r[9])
             for r in rows
         ]
 
     def add_track_layout(self, name: str, track_name: str, reference_lap: dict,
                          source_session_id: str | None = None,
-                         source_lap_index: int | None = None) -> TrackLayout:
+                         source_lap_index: int | None = None,
+                         source_driver: str | None = None,
+                         source_car: str | None = None,
+                         source_session_name: str | None = None) -> TrackLayout:
         from datetime import datetime, timezone
         layout_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -656,23 +669,54 @@ class SessionStore:
             id=layout_id, name=name, track_name=track_name,
             source_session_id=source_session_id, source_lap_index=source_lap_index,
             reference_lap_json=ref_json, created_at=now,
+            source_driver=source_driver, source_car=source_car,
+            source_session_name=source_session_name,
         )
         with self._conn() as c:
             c.execute(
-                "INSERT INTO track_layouts (id, name, track_name, source_session_id, source_lap_index, reference_lap_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO track_layouts (id, name, track_name, source_session_id, source_lap_index,"
+                " reference_lap_json, created_at, source_driver, source_car, source_session_name)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (layout.id, layout.name, layout.track_name, layout.source_session_id,
-                 layout.source_lap_index, ref_json, now),
+                 layout.source_lap_index, ref_json, now,
+                 layout.source_driver, layout.source_car, layout.source_session_name),
             )
         return layout
 
     def update_track_layout(self, layout_id: str, name: str | None = None,
-                            reference_lap: dict | None = None) -> None:
+                            reference_lap: dict | None = None,
+                            source_lap_index: int | None = None,
+                            source_session_id: str | None = None,
+                            source_driver: str | None = None,
+                            source_car: str | None = None,
+                            source_session_name: str | None = None) -> None:
         with self._conn() as c:
+            sets: list[str] = []
+            vals: list = []
             if name is not None:
-                c.execute("UPDATE track_layouts SET name = ? WHERE id = ?", (name, layout_id))
+                sets.append("name = ?")
+                vals.append(name)
             if reference_lap is not None:
-                ref_json = json.dumps(reference_lap, default=str)
-                c.execute("UPDATE track_layouts SET reference_lap_json = ? WHERE id = ?", (ref_json, layout_id))
+                sets.append("reference_lap_json = ?")
+                vals.append(json.dumps(reference_lap, default=str))
+            if source_lap_index is not None:
+                sets.append("source_lap_index = ?")
+                vals.append(source_lap_index)
+            if source_session_id is not None:
+                sets.append("source_session_id = ?")
+                vals.append(source_session_id)
+            if source_driver is not None:
+                sets.append("source_driver = ?")
+                vals.append(source_driver)
+            if source_car is not None:
+                sets.append("source_car = ?")
+                vals.append(source_car)
+            if source_session_name is not None:
+                sets.append("source_session_name = ?")
+                vals.append(source_session_name)
+            if sets:
+                vals.append(layout_id)
+                c.execute(f"UPDATE track_layouts SET {', '.join(sets)} WHERE id = ?", vals)
 
     def delete_track_layout(self, layout_id: str) -> None:
         with self._conn() as c:
@@ -681,17 +725,31 @@ class SessionStore:
 
     def upsert_track_layout(self, track_name: str, reference_lap: dict,
                             source_session_id: str | None = None,
-                            source_lap_index: int | None = None) -> TrackLayout:
+                            source_lap_index: int | None = None,
+                            source_driver: str | None = None,
+                            source_car: str | None = None,
+                            source_session_name: str | None = None) -> TrackLayout:
         """Legacy compat: create or update a layout for the given track name."""
         key = self.normalize_track_key(track_name)
         existing = self.list_track_layouts(track_name)
         if existing:
             layout = existing[0]
-            self.update_track_layout(layout.id, reference_lap=reference_lap)
+            self.update_track_layout(
+                layout.id,
+                reference_lap=reference_lap,
+                source_lap_index=source_lap_index,
+                source_session_id=source_session_id,
+                source_driver=source_driver,
+                source_car=source_car,
+                source_session_name=source_session_name,
+            )
             return layout
         return self.add_track_layout(track_name, key, reference_lap,
                                      source_session_id=source_session_id,
-                                     source_lap_index=source_lap_index)
+                                     source_lap_index=source_lap_index,
+                                     source_driver=source_driver,
+                                     source_car=source_car,
+                                     source_session_name=source_session_name)
 
     # ---------- Dashboard Templates ----------
 

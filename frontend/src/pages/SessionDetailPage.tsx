@@ -19,11 +19,13 @@ import {
   tempLabel,
   type DistanceUnit,
   type PressureUnit,
+  type SpeedUnit,
   type TempUnit,
 } from '../utils/units';
 
 const LS_SESSION_PRESSURE = 'session_pressure_unit';
 const LS_SESSION_TEMP = 'session_temp_unit';
+const LS_SESSION_SPEED = 'session_speed_unit';
 
 function readLsPressureUnit(): PressureUnit | null {
   try {
@@ -39,6 +41,16 @@ function readLsTempUnit(): TempUnit | null {
   try {
     const v = localStorage.getItem(LS_SESSION_TEMP);
     if (v === 'c' || v === 'f') return v;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function readLsSpeedUnit(): SpeedUnit | null {
+  try {
+    const v = localStorage.getItem(LS_SESSION_SPEED);
+    if (v === 'km/h' || v === 'mph') return v;
   } catch {
     /* ignore */
   }
@@ -77,6 +89,7 @@ export default function SessionDetailPage() {
     () => readLsPressureUnit() ?? 'psi',
   );
   const [tempUnit, setTempUnitState] = useState<TempUnit>(() => readLsTempUnit() ?? 'c');
+  const [speedUnit, setSpeedUnitState] = useState<SpeedUnit>(() => readLsSpeedUnit() ?? 'km/h');
 
   useEffect(() => {
     if (!settingsData?.preferences || sessionUnitsHydrated.current) return;
@@ -88,6 +101,10 @@ export default function SessionDetailPage() {
     if (readLsTempUnit() === null) {
       const t = String(settingsData.preferences.default_temp_unit ?? 'c').toLowerCase();
       setTempUnitState(t === 'f' ? 'f' : 'c');
+    }
+    if (readLsSpeedUnit() === null) {
+      const d = String(settingsData.preferences.default_distance_unit ?? 'km').toLowerCase();
+      setSpeedUnitState(d === 'mi' ? 'mph' : 'km/h');
     }
   }, [settingsData]);
 
@@ -104,6 +121,15 @@ export default function SessionDetailPage() {
     setTempUnitState(u);
     try {
       localStorage.setItem(LS_SESSION_TEMP, u);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const setSpeedUnit = useCallback((u: SpeedUnit) => {
+    setSpeedUnitState(u);
+    try {
+      localStorage.setItem(LS_SESSION_SPEED, u);
     } catch {
       /* ignore */
     }
@@ -231,6 +257,99 @@ export default function SessionDetailPage() {
 
   const dashData = data?.dashboard_data as DashboardData | null;
 
+  const excludedLaps = useMemo(() => {
+    if (dashData && Array.isArray(dashData.excluded_laps)) {
+      return [...new Set((dashData.excluded_laps as unknown[]).map((x) => Number(x)))].sort(
+        (a, b) => a - b,
+      );
+    }
+    return [0];
+  }, [dashData && Array.isArray(dashData.excluded_laps) ? JSON.stringify(dashData.excluded_laps) : null]);
+  const excludedLapsRef = useRef(excludedLaps);
+  excludedLapsRef.current = excludedLaps;
+
+  const setExcludedInCache = useCallback(
+    (next: number[]) => {
+      qc.setQueryData(['session-detail', id], (old: unknown) => {
+        const o = old as Record<string, unknown> | undefined;
+        if (!o?.dashboard_data) return o;
+        return {
+          ...o,
+          dashboard_data: { ...(o.dashboard_data as Record<string, unknown>), excluded_laps: next },
+        };
+      });
+    },
+    [qc, id],
+  );
+
+  const excludeMut = useMutation({
+    mutationFn: async (segmentIndex: number) => {
+      const s = new Set(excludedLapsRef.current.map((x) => Number(x)));
+      if (s.has(segmentIndex)) s.delete(segmentIndex);
+      else s.add(segmentIndex);
+      const next = [...s].sort((a, b) => a - b);
+      return apiPatch<{ ok?: boolean; excluded_laps: number[] }>(`/api/sessions/${id!}`, {
+        excluded_laps: next,
+      });
+    },
+    onMutate: async (segmentIndex) => {
+      await qc.cancelQueries({ queryKey: ['session-detail', id] });
+      const prevQuery = qc.getQueryData(['session-detail', id]);
+      const s = new Set(excludedLapsRef.current.map((x) => Number(x)));
+      if (s.has(segmentIndex)) s.delete(segmentIndex);
+      else s.add(segmentIndex);
+      const next = [...s].sort((a, b) => a - b);
+      setExcludedInCache(next);
+      return { prevQuery };
+    },
+    onError: (_err, _seg, ctx) => {
+      if (ctx?.prevQuery) qc.setQueryData(['session-detail', id], ctx.prevQuery);
+    },
+    onSuccess: (res) => {
+      if (Array.isArray(res.excluded_laps)) {
+        setExcludedInCache(res.excluded_laps);
+      }
+    },
+  });
+
+  const onToggleExcludeLap = useCallback(
+    (segmentIndex: number) => {
+      if (!id) return;
+      excludeMut.mutate(segmentIndex);
+    },
+    [id, excludeMut],
+  );
+
+  const referenceLapOptions = useMemo(() => {
+    const splits = dashData?.lap_splits;
+    if (!splits?.length) return [];
+    const out: { segmentIndex: number; label: string }[] = [];
+    for (let i = 0; i < splits.length - 1; i++) {
+      const dt = splits[i + 1]! - splits[i]!;
+      if (dt <= 0) continue;
+      const m = Math.floor(dt / 60);
+      const sec = dt % 60;
+      const timeStr = m > 0 ? `${m}:${sec.toFixed(3).padStart(6, '0')}` : dt.toFixed(3);
+      out.push({ segmentIndex: i, label: `Lap ${i + 1} (${timeStr}s)` });
+    }
+    return out;
+  }, [dashData?.lap_splits]);
+
+  const refLapMut = useMutation({
+    mutationFn: (lapIndex: number) =>
+      apiPatch<{ ok?: boolean; reference_lap_index?: number }>(`/api/sessions/${id!}`, {
+        apply_reference_lap_index: lapIndex,
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['session-detail', id] }),
+  });
+
+  const handleApplyReferenceLap = useCallback(
+    async (segmentIndex: number) => {
+      await refLapMut.mutateAsync(segmentIndex);
+    },
+    [refLapMut],
+  );
+
   const tpmsSeriesPressureUnit = useMemo((): PressureUnit => {
     const meta = dashData?.channel_meta;
     if (!meta) return 'bar';
@@ -261,21 +380,27 @@ export default function SessionDetailPage() {
 
 
   const sectionEditorData = useMemo(() => {
-    if (!dashData?.series || !dashData.has_distance) return null;
+    if (!dashData?.has_distance) return null;
 
-    const distances = dashData.distances;
-    const series = dashData.series;
-    const meta = dashData.channel_meta;
+    const mapLapRaw = view === 'track-map' ? dashData.map_lap : null;
+    const mapLapHasSeries = mapLapRaw != null && Object.keys(mapLapRaw.series ?? {}).length > 0;
+    const mapLap = mapLapHasSeries ? mapLapRaw : null;
+    const distances = mapLap?.distances ?? dashData.distances;
+    const series = mapLap?.series ?? dashData.series;
+    const rawMeta = mapLap?.channel_meta ?? dashData.channel_meta;
+    const meta: Record<string, { label: string; unit?: string; category?: string }> = {};
+    for (const [k, v] of Object.entries(rawMeta)) {
+      meta[k] = { ...v, label: v.label ?? (v as { display?: string }).display ?? k };
+    }
 
-    // Use all session data directly — no fragile per-lap slicing.
-    // The section editor chart can zoom to the fastest lap via xRange.
+    if (!series || !distances?.length) return null;
+
     const validSeries: Record<string, number[]> = {};
     for (const k of Object.keys(series)) {
       const arr = series[k];
       if (Array.isArray(arr) && arr.length > 0) validSeries[k] = arr;
     }
 
-    // Pick default channels (case-insensitive match for preferred keys)
     const seriesKeys = Object.keys(validSeries);
     const lowerMap: Record<string, string> = {};
     for (const k of seriesKeys) lowerMap[k.toLowerCase()] = k;
@@ -309,7 +434,7 @@ export default function SessionDetailPage() {
       channelsByCategory: byCat,
       defaultChannelKeys: defaultKeys,
     };
-  }, [dashData]);
+  }, [dashData, view]);
 
   if (isLoading) {
     return (
@@ -423,6 +548,18 @@ export default function SessionDetailPage() {
               {tempLabel('f')}
             </button>
           </div>
+          <div className="unit-toggle-group" role="group" aria-label="Speed unit">
+            {(['km/h', 'mph'] as SpeedUnit[]).map((u) => (
+              <button
+                key={u}
+                type="button"
+                className={`unit-toggle-btn${speedUnit === u ? ' active' : ''}`}
+                onClick={() => setSpeedUnit(u)}
+              >
+                {u}
+              </button>
+            ))}
+          </div>
           {view === 'dashboard' && (
             <Button variant="ghost" size="sm" onClick={() => setTemplateOpen(true)}>
               Templates
@@ -443,6 +580,8 @@ export default function SessionDetailPage() {
                   pressureUnit={pressureUnit}
                   tempUnit={tempUnit}
                   distanceUnit={distanceUnit}
+                  excludedLaps={excludedLaps}
+                  onToggleExcludeLap={onToggleExcludeLap}
                 />
                 <DashboardTemplateModal
                   open={templateOpen}
@@ -460,75 +599,85 @@ export default function SessionDetailPage() {
             )}
 
             {view === 'tire-pressure' && (
-              <div className="card" style={{ padding: '1rem' }}>
-                <h2 style={{ margin: '0 0 0.75rem', fontSize: '1.1rem' }}>Tire Pressure Analysis</h2>
-                {!dashData || !tirePressureOk || !tpmsSeries ? (
-                  <p className="muted">No TPMS pressure channels for this session.</p>
-                ) : (
-                  <TirePressureChart
-                    xValues={xValues}
-                    xLabel={xLabel}
-                    pressureFL={tpmsSeries.tpms_press_fl}
-                    pressureFR={tpmsSeries.tpms_press_fr}
-                    pressureRL={tpmsSeries.tpms_press_rl}
-                    pressureRR={tpmsSeries.tpms_press_rr}
-                    target={dashData.target_pressure_psi ?? null}
-                    height={320}
-                    xCursorField={xCursorField}
-                    seriesPressureUnit={tpmsSeriesPressureUnit}
-                    displayPressureUnit={pressureUnit}
-                    distanceDisplayUnit={distanceUnit}
-                  />
-                )}
-              </div>
+              !dashData || !tirePressureOk || !tpmsSeries ? (
+                <p className="muted">No TPMS pressure channels for this session.</p>
+              ) : (
+                <TirePressureChart
+                  xValues={xValues}
+                  xLabel={xLabel}
+                  pressureFL={tpmsSeries.tpms_press_fl}
+                  pressureFR={tpmsSeries.tpms_press_fr}
+                  pressureRL={tpmsSeries.tpms_press_rl}
+                  pressureRR={tpmsSeries.tpms_press_rr}
+                  target={dashData.target_pressure_psi ?? null}
+                  height={320}
+                  xCursorField={xCursorField}
+                  seriesPressureUnit={tpmsSeriesPressureUnit}
+                  displayPressureUnit={pressureUnit}
+                  distanceDisplayUnit={distanceUnit}
+                />
+              )
             )}
 
             {view === 'track-map' && (
-              <div className="session-tool-map-fill">
-                {dashData?.points && dashData.points.length >= 2 ? (
-                  <>
-                    {trackName && !sectionsLoading ? (
-                      <SectionEditor
-                        sessionId={id!}
-                        trackName={trackName}
-                        points={dashData.points}
-                        xValues={sectionEditorData?.distances ?? xValues}
-                        xLabel="Distance (m)"
-                        defaultChannels={sectionEditorData?.defaultChannels ?? []}
-                        series={sectionEditorData?.series ?? {}}
-                        channelMeta={sectionEditorData?.channelMeta ?? dashData.channel_meta}
-                        channelsByCategory={sectionEditorData?.channelsByCategory ?? {}}
-                        defaultChannelKeys={sectionEditorData?.defaultChannelKeys ?? []}
-                        sections={trackSections}
-                        onSectionsChange={() => qc.invalidateQueries({ queryKey: ['session-detail', id] })}
-                      />
-                    ) : sectionsLoading ? (
-                      <p className="muted">Loading sections...</p>
-                    ) : (
-                      <p className="muted">No track name for this session.</p>
-                    )}
-                  </>
-                ) : (
-                  <p className="muted">No GPS data for this session.</p>
-                )}
-              </div>
+              !dashData?.points || dashData.points.length < 2 ? (
+                <p className="muted">No GPS data for this session.</p>
+              ) : !trackName ? (
+                <p className="muted">No track name for this session.</p>
+              ) : sectionsLoading ? (
+                <p className="muted">Loading sections...</p>
+              ) : (
+                <SectionEditor
+                  sessionId={id!}
+                  trackName={trackName}
+                  points={sectionEditorData && dashData.map_lap?.points && dashData.map_lap.points.length >= 2 && Object.keys(dashData.map_lap.series ?? {}).length > 0 ? dashData.map_lap.points : dashData.points}
+                  xValues={sectionEditorData?.distances ?? xValues}
+                  xLabel="Distance (m)"
+                  defaultChannels={sectionEditorData?.defaultChannels ?? []}
+                  series={sectionEditorData?.series ?? {}}
+                  channelMeta={sectionEditorData?.channelMeta ?? dashData.channel_meta}
+                  channelsByCategory={sectionEditorData?.channelsByCategory ?? {}}
+                  defaultChannelKeys={sectionEditorData?.defaultChannelKeys ?? []}
+                  sections={trackSections}
+                  onSectionsChange={() => qc.invalidateQueries({ queryKey: ['session-detail', id] })}
+                  referenceLapOptions={referenceLapOptions}
+                  appliedReferenceIndex={dashData.map_lap_segment_index ?? dashData.reference_lap_index ?? null}
+                  onApplyReferenceLap={handleApplyReferenceLap}
+                  referenceLapApplyPending={refLapMut.isPending}
+                />
+              )
             )}
 
             {view === 'section-metrics' && (
-              <div className="card" style={{ padding: '1rem' }}>
-                {!dashData ? (
-                  <p className="muted">No telemetry for this session.</p>
-                ) : sectionsLoading ? (
-                  <p className="muted">Loading sections...</p>
-                ) : (
-                  <SectionMetrics
-                    sections={trackSections}
-                    dashData={dashData}
-                    sessionId={id!}
-                    distanceUnit={distanceUnit}
-                  />
-                )}
-              </div>
+              !dashData ? (
+                <p className="muted">No telemetry for this session.</p>
+              ) : sectionsLoading ? (
+                <p className="muted">Loading sections...</p>
+              ) : (
+                <SectionMetrics
+                  sections={trackSections}
+                  dashData={dashData}
+                  sessionId={id!}
+                  speedUnit={speedUnit}
+                  pressureUnit={pressureUnit}
+                  excludedLaps={excludedLaps}
+                  onToggleExcludeLap={onToggleExcludeLap}
+                  sessionMeta={{
+                    driver: data.car_driver?.driver_name ?? String(session.driver ?? ''),
+                    track: String(session.track ?? ''),
+                    sessionType: String(session.session_type ?? ''),
+                    car: data.car_driver?.car_identifier ?? String(session.car ?? ''),
+                    outingNumber: session.outing_number ? String(session.outing_number) : undefined,
+                    sessionNumber: session.session_number ? String(session.session_number) : undefined,
+                    lapCount: data.session_summary?.lap_count ?? null,
+                    fastestLapTime: data.session_summary?.fastest_lap_time ?? null,
+                    tireSet: data.tire_set?.name ?? null,
+                    ambientTempC: session.ambient_temp_c != null ? Number(session.ambient_temp_c) : null,
+                    trackTempC: session.track_temp_c != null ? Number(session.track_temp_c) : null,
+                    notes: session.lap_count_notes ? String(session.lap_count_notes) : null,
+                  }}
+                />
+              )
             )}
 
             {view === 'info' && (
@@ -556,6 +705,11 @@ function SessionInfoPanel({
   const s = data.session as Record<string, unknown>;
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
+    track: String(s.track ?? ''),
+    session_type: String(s.session_type ?? ''),
+    car_driver_id: String(s.car_driver_id ?? ''),
+    outing_number: String(s.outing_number ?? ''),
+    session_number: String(s.session_number ?? ''),
     ambient_temp_c: String(s.ambient_temp_c ?? ''),
     track_temp_c: String(s.track_temp_c ?? ''),
     tire_set_id: String(s.tire_set_id ?? ''),
@@ -593,8 +747,18 @@ function SessionInfoPanel({
     );
   }
 
+  const SESSION_TYPES = [
+    'Practice 1', 'Practice 2', 'Practice 3',
+    'Qualifying', 'Race 1', 'Race 2',
+  ];
+
   function handleSave() {
     onUpdate({
+      track: form.track || null,
+      session_type: form.session_type || null,
+      car_driver_id: form.car_driver_id || null,
+      outing_number: form.outing_number || null,
+      session_number: form.session_number || null,
       ambient_temp_c: parseFloat(form.ambient_temp_c) || null,
       track_temp_c: parseFloat(form.track_temp_c) || null,
       tire_set_id: form.tire_set_id || null,
@@ -609,40 +773,125 @@ function SessionInfoPanel({
     <div className="card session-info-panel">
       <div className="session-info-header">
         <h3>Session Info</h3>
-        <Button variant="ghost" size="sm" onClick={() => setEditing(!editing)}>
+        <Button variant="ghost" size="sm" onClick={() => {
+          if (!editing) {
+            setForm({
+              track: String(s.track ?? ''),
+              session_type: String(s.session_type ?? ''),
+              car_driver_id: String(s.car_driver_id ?? ''),
+              outing_number: String(s.outing_number ?? ''),
+              session_number: String(s.session_number ?? ''),
+              ambient_temp_c: String(s.ambient_temp_c ?? ''),
+              track_temp_c: String(s.track_temp_c ?? ''),
+              tire_set_id: String(s.tire_set_id ?? ''),
+              track_layout_id: String(s.track_layout_id ?? ''),
+              target_pressure_psi: String(s.target_pressure_psi ?? ''),
+              lap_count_notes: String(s.lap_count_notes ?? ''),
+            });
+          }
+          setEditing(!editing);
+        }}>
           {editing ? 'Cancel' : 'Edit'}
         </Button>
       </div>
 
       <dl className="session-info-dl">
-        <div>
-          <dt>Track</dt>
-          <dd>{String(s.track)}</dd>
-        </div>
-        <div>
-          <dt>Type</dt>
-          <dd>{String(s.session_type)}</dd>
-        </div>
-        <div>
-          <dt>Car</dt>
-          <dd>{data.car_driver?.car_identifier ?? String(s.car || '—')}</dd>
-        </div>
-        <div>
-          <dt>Driver</dt>
-          <dd>{data.car_driver?.driver_name ?? String(s.driver || '—')}</dd>
-        </div>
-        {s.outing_number ? (
-          <div>
-            <dt>Outing #</dt>
-            <dd>{String(s.outing_number)}</dd>
-          </div>
-        ) : null}
-        {s.session_number ? (
-          <div>
-            <dt>Session #</dt>
-            <dd>{String(s.session_number)}</dd>
-          </div>
-        ) : null}
+        {editing ? (
+          <>
+            <div>
+              <dt>Track</dt>
+              <dd>
+                <input
+                  className="form-input form-input-sm"
+                  value={form.track}
+                  onChange={(e) => setForm({ ...form, track: e.target.value })}
+                />
+              </dd>
+            </div>
+            <div>
+              <dt>Type</dt>
+              <dd>
+                <select
+                  className="form-select form-select-sm"
+                  value={form.session_type}
+                  onChange={(e) => setForm({ ...form, session_type: e.target.value })}
+                >
+                  {SESSION_TYPES.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </dd>
+            </div>
+            <div>
+              <dt>Car / Driver</dt>
+              <dd>
+                <select
+                  className="form-select form-select-sm"
+                  value={form.car_driver_id}
+                  onChange={(e) => setForm({ ...form, car_driver_id: e.target.value })}
+                >
+                  <option value="">None</option>
+                  {data.car_drivers.map((cd) => (
+                    <option key={cd.id} value={cd.id}>
+                      {cd.car_identifier} / {cd.driver_name}
+                    </option>
+                  ))}
+                </select>
+              </dd>
+            </div>
+            <div>
+              <dt>Outing #</dt>
+              <dd>
+                <input
+                  className="form-input form-input-sm"
+                  value={form.outing_number}
+                  onChange={(e) => setForm({ ...form, outing_number: e.target.value })}
+                />
+              </dd>
+            </div>
+            <div>
+              <dt>Session #</dt>
+              <dd>
+                <input
+                  className="form-input form-input-sm"
+                  value={form.session_number}
+                  onChange={(e) => setForm({ ...form, session_number: e.target.value })}
+                />
+              </dd>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <dt>Track</dt>
+              <dd>{String(s.track || '—')}</dd>
+            </div>
+            <div>
+              <dt>Type</dt>
+              <dd>{String(s.session_type || '—')}</dd>
+            </div>
+            <div>
+              <dt>Car</dt>
+              <dd>{data.car_driver?.car_identifier ?? String(s.car || '—')}</dd>
+            </div>
+            <div>
+              <dt>Driver</dt>
+              <dd>{data.car_driver?.driver_name ?? String(s.driver || '—')}</dd>
+            </div>
+            {s.outing_number ? (
+              <div>
+                <dt>Outing #</dt>
+                <dd>{String(s.outing_number)}</dd>
+              </div>
+            ) : null}
+            {s.session_number ? (
+              <div>
+                <dt>Session #</dt>
+                <dd>{String(s.session_number)}</dd>
+              </div>
+            ) : null}
+          </>
+        )}
 
         {editing ? (
           <>

@@ -1,22 +1,49 @@
-import { useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import type { TrackSection } from '../../types/models';
 import type { DashboardData } from '../dashboard/Dashboard';
-import { metersToDistanceDisplay, type DistanceUnit } from '../../utils/units';
+import {
+  metersToDistanceDisplay,
+  convertSpeed,
+  convertPressure,
+  storagePressureUnit,
+  type DistanceUnit,
+  type SpeedUnit,
+  type PressureUnit,
+} from '../../utils/units';
 
 /** Matches backend `CHANNEL_SIGNATURES` display strings for resolution. */
 const CANONICAL_DISPLAY: Record<string, string> = {
   speed: 'Speed',
   pbrake_f: 'Brake pressure front',
+  aps: 'Throttle position',
 };
+
+export interface SessionMeta {
+  driver?: string;
+  track?: string;
+  sessionType?: string;
+  car?: string;
+  outingNumber?: string;
+  sessionNumber?: string;
+  lapCount?: number | null;
+  fastestLapTime?: number | null;
+  tireSet?: string | null;
+  ambientTempC?: number | null;
+  trackTempC?: number | null;
+  notes?: string | null;
+}
 
 export interface SectionMetricsProps {
   sections: TrackSection[];
   dashData: DashboardData;
   sessionId: string;
-  /** Matches prefs / dashboard distance axis (meters in data → km or mi labels). */
-  distanceUnit?: DistanceUnit;
-  /** Zoom charts to this lap’s X extent (distance or time), same units as dashboard X axis. */
+  speedUnit?: SpeedUnit;
+  pressureUnit?: PressureUnit;
   onZoomToLap?: (min: number, max: number) => void;
+  /** 0-based segment indices excluded from virtual best / improvement averages (includes out-lap 0). */
+  excludedLaps?: number[];
+  onToggleExcludeLap?: (segmentIndex: number) => void;
+  sessionMeta?: SessionMeta;
 }
 
 type SectionBoundary = { name: string; start_distance: number; end_distance: number };
@@ -24,8 +51,22 @@ type SectionBoundary = { name: string; start_distance: number; end_distance: num
 interface CellStats {
   duration: number | null;
   minSpeed: number | null;
+  maxSpeed: number | null;
+  avgSpeed: number | null;
+  minThrottle: number | null;
+  maxThrottle: number | null;
+  avgThrottle: number | null;
+  minBrake: number | null;
   maxBrake: number | null;
+  avgBrake: number | null;
 }
+
+const EMPTY_CELL: CellStats = {
+  duration: null,
+  minSpeed: null, maxSpeed: null, avgSpeed: null,
+  minThrottle: null, maxThrottle: null, avgThrottle: null,
+  minBrake: null, maxBrake: null, avgBrake: null,
+};
 
 function bisectLeft(arr: number[], x: number): number {
   let lo = 0;
@@ -90,53 +131,68 @@ function resolveChannel(
   return null;
 }
 
+function channelMinMaxAvg(
+  arr: number[],
+  cStart: number,
+  cEnd: number,
+): { min: number | null; max: number | null; avg: number | null } {
+  let min: number | null = null;
+  let max: number | null = null;
+  let sum = 0;
+  let count = 0;
+  for (let i = cStart; i < cEnd; i++) {
+    const v = arr[i];
+    if (v != null && Number.isFinite(v)) {
+      min = min === null ? v : Math.min(min, v);
+      max = max === null ? v : Math.max(max, v);
+      sum += v;
+      count++;
+    }
+  }
+  return { min, max, avg: count > 0 ? sum / count : null };
+}
+
 function sliceStats(
-  times: number[],
-  distances: number[],
+  rawTimes: number[],
+  rawDistances: number[],
   speedKey: string | null,
   brakeKey: string | null,
+  throttleKey: string | null,
   series: DashboardData['series'],
+  chartDistances: number[],
   startD: number,
   endD: number,
 ): CellStats {
-  const iStart = bisectLeft(distances, startD);
-  let iEnd = bisectRight(distances, endD);
-  if (iEnd <= iStart || iStart >= times.length) {
-    return { duration: null, minSpeed: null, maxBrake: null };
-  }
-  iEnd = Math.min(iEnd, times.length);
-  const tStart = times[iStart];
-  const tEnd = times[iEnd - 1];
+  const iStart = bisectLeft(rawDistances, startD);
+  let iEnd = bisectRight(rawDistances, endD);
+  if (iEnd <= iStart || iStart >= rawTimes.length) return EMPTY_CELL;
+  iEnd = Math.min(iEnd, rawTimes.length);
+  const tStart = rawTimes[iStart];
+  const tEnd = rawTimes[iEnd - 1];
   const duration = tEnd - tStart;
-  if (duration <= 0) return { duration: null, minSpeed: null, maxBrake: null };
+  if (duration <= 0) return EMPTY_CELL;
 
-  const speed = speedKey ? series[speedKey] ?? [] : [];
-  const brake = brakeKey ? series[brakeKey] ?? [] : [];
+  const cStart = bisectLeft(chartDistances, startD);
+  let cEnd = bisectRight(chartDistances, endD);
+  cEnd = Math.min(cEnd, chartDistances.length);
 
-  let minSpeed: number | null = null;
-  for (let i = iStart; i < iEnd; i++) {
-    const v = speed[i];
-    if (v != null && Number.isFinite(v)) {
-      minSpeed = minSpeed === null ? v : Math.min(minSpeed, v);
-    }
-  }
+  const sp = channelMinMaxAvg(speedKey ? series[speedKey] ?? [] : [], cStart, cEnd);
+  const br = channelMinMaxAvg(brakeKey ? series[brakeKey] ?? [] : [], cStart, cEnd);
+  const th = channelMinMaxAvg(throttleKey ? series[throttleKey] ?? [] : [], cStart, cEnd);
 
-  let maxBrake: number | null = null;
-  for (let i = iStart; i < iEnd; i++) {
-    const v = brake[i];
-    if (v != null && Number.isFinite(v)) {
-      maxBrake = maxBrake === null ? v : Math.max(maxBrake, v);
-    }
-  }
+  const r1 = (v: number | null) => (v != null ? Math.round(v * 10) / 10 : null);
+  const r2 = (v: number | null) => (v != null ? Math.round(v * 100) / 100 : null);
+  const r0 = (v: number | null) => (v != null ? Math.round(v) : null);
 
   return {
     duration: Math.round(duration * 1000) / 1000,
-    minSpeed: minSpeed != null ? Math.round(minSpeed * 10) / 10 : null,
-    maxBrake: maxBrake != null ? Math.round(maxBrake * 100) / 100 : null,
+    minSpeed: r1(sp.min), maxSpeed: r1(sp.max), avgSpeed: r1(sp.avg),
+    minThrottle: r0(th.min), maxThrottle: r0(th.max), avgThrottle: r0(th.avg),
+    minBrake: r2(br.min), maxBrake: r2(br.max), avgBrake: r2(br.avg),
   };
 }
 
-/** `m:ss.SSS` if ≥ 60s, else `ss.SSS`. */
+/** `m:ss.SSS` if >= 60s, else `ss.SSS`. */
 function formatSectionTime(seconds: number): string {
   if (!Number.isFinite(seconds)) return '—';
   const m = Math.floor(seconds / 60);
@@ -177,22 +233,30 @@ function normalizeSections(
   }));
 }
 
-const KMH_TO_MPH = 0.621371192237334;
-
 export default function SectionMetrics({
   sections: sectionsProp,
   dashData,
   sessionId,
-  distanceUnit = 'km',
+  speedUnit = 'km/h',
+  pressureUnit = 'psi',
   onZoomToLap,
+  excludedLaps,
+  onToggleExcludeLap,
+  sessionMeta,
 }: SectionMetricsProps) {
+  const [selectedCell, setSelectedCell] = useState<{ li: number; si: number } | null>(null);
+  const distanceUnit: DistanceUnit = speedUnit === 'mph' ? 'mi' : 'km';
+
   const computed = useMemo(() => {
-    const times = dashData.times ?? [];
-    const distances = dashData.distances ?? [];
+    const excludedSet = new Set(excludedLaps ?? [0]);
+    const chartTimes = dashData.times ?? [];
+    const chartDistances = dashData.distances ?? [];
+    const rawTimes = dashData.raw_times?.length ? dashData.raw_times : chartTimes;
+    const rawDistances = dashData.raw_distances?.length ? dashData.raw_distances : chartDistances;
     const series = dashData.series ?? {};
     const channelMeta = dashData.channel_meta ?? {};
 
-    if (!times.length || !distances.length || times.length !== distances.length) {
+    if (!rawTimes.length || !rawDistances.length || rawTimes.length !== rawDistances.length) {
       return { error: 'Section metrics need aligned time and distance telemetry.' as const };
     }
 
@@ -215,9 +279,14 @@ export default function SectionMetrics({
 
     const speedKey = resolveChannel('speed', channelMeta);
     const brakeKey = resolveChannel('pbrake_f', channelMeta);
+    const throttleKey = resolveChannel('aps', channelMeta);
     if (!speedKey) {
       return { error: 'Speed channel is required for section metrics.' as const };
     }
+
+    const brakeStorageUnit: PressureUnit = brakeKey
+      ? storagePressureUnit(channelMeta[brakeKey], brakeKey)
+      : 'bar';
 
     let gpsTotal = gpsTotalFromPoints(dashData.points ?? []);
     if (gpsTotal <= 0) {
@@ -237,18 +306,29 @@ export default function SectionMetrics({
         const secStart = lapD0 + sec.start_distance * scale;
         let secEnd = lapD0 + sec.end_distance * scale;
         secEnd = Math.min(secEnd, lapD1);
-        return sliceStats(times, distances, speedKey, brakeKey, series, secStart, secEnd);
+        return sliceStats(
+          rawTimes, rawDistances, speedKey, brakeKey, throttleKey,
+          series, chartDistances, secStart, secEnd,
+        );
       });
     });
 
     const nLaps = grid.length;
     const nSec = sectionDefs.length;
+    const lapTimesSeg = dashData.lap_times ?? [];
+
     const bestDur: (number | null)[] = Array(nSec).fill(null);
+    const bestDurLap: (number | null)[] = Array(nSec).fill(null);
     for (let si = 0; si < nSec; si++) {
-      for (let li = 1; li < nLaps; li++) {
+      for (let li = 0; li < nLaps; li++) {
+        const rowSeg = lapTimesSeg[li]?.segment_index ?? li;
+        if (excludedSet.has(rowSeg)) continue;
         const d = grid[li][si]?.duration;
         if (d == null) continue;
-        bestDur[si] = bestDur[si] === null ? d : Math.min(bestDur[si]!, d);
+        if (bestDur[si] === null || d < bestDur[si]!) {
+          bestDur[si] = d;
+          bestDurLap[si] = lapTimesSeg[li]?.lap ?? li + 1;
+        }
       }
     }
 
@@ -273,7 +353,9 @@ export default function SectionMetrics({
       const vb = bestDur[si];
       if (vb == null) continue;
       const deltas: number[] = [];
-      for (let li = 1; li < nLaps; li++) {
+      for (let li = 0; li < nLaps; li++) {
+        const rowSeg = lapTimesSeg[li]?.segment_index ?? li;
+        if (excludedSet.has(rowSeg)) continue;
         const d = grid[li][si]?.duration;
         if (d != null) deltas.push(Math.round((d - vb) * 1000) / 1000);
       }
@@ -289,6 +371,17 @@ export default function SectionMetrics({
     improvement.sort((a, b) => b.avgDelta - a.avgDelta);
 
     const sectionBestTimes = sectionDefs.map((_, si) => bestDur[si]);
+    const sectionBestLaps = sectionDefs.map((_, si) => bestDurLap[si]);
+
+    let fastestLapTime: number | null = null;
+    for (let li = 0; li < lapTimesSeg.length; li++) {
+      const segIdx = lapTimesSeg[li]?.segment_index ?? li;
+      if (excludedSet.has(segIdx)) continue;
+      const t = lapTimesSeg[li]?.time;
+      if (t != null && Number.isFinite(t)) {
+        fastestLapTime = fastestLapTime === null ? t : Math.min(fastestLapTime, t);
+      }
+    }
 
     return {
       error: null as null,
@@ -301,9 +394,12 @@ export default function SectionMetrics({
         : null,
       improvement,
       sectionBestTimes,
+      sectionBestLaps,
       splits,
+      fastestLapTime,
+      brakeStorageUnit,
     };
-  }, [dashData, sectionsProp]);
+  }, [dashData, sectionsProp, excludedLaps]);
 
   const onRowClick = useCallback(
     (lapRowIndex: number) => {
@@ -337,62 +433,166 @@ export default function SectionMetrics({
     virtualBestTotal,
     improvement,
     sectionBestTimes,
+    sectionBestLaps,
+    fastestLapTime,
+    brakeStorageUnit,
   } = computed;
 
   const lapTimes = dashData.lap_times ?? [];
   const fastIdx = dashData.fast_lap_index ?? null;
+  const excludedSetRender = new Set(excludedLaps ?? [0]);
+
+  const fmtSpd = (v: number | null) =>
+    v != null ? convertSpeed(v, speedUnit).toFixed(1) : '—';
+  const fmtThr = (v: number | null) =>
+    v != null ? String(Math.round(v)) : '—';
+  const fmtBrk = (v: number | null) =>
+    v != null ? convertPressure(v, brakeStorageUnit, pressureUnit).toFixed(2) : '—';
+
+  const excludedLapLabels = useMemo(() => {
+    const set = new Set(excludedLaps ?? [0]);
+    if (set.size === 0) return '';
+    const lt = dashData.lap_times ?? [];
+    const labels: string[] = [];
+    for (const seg of [...set].sort((a, b) => a - b)) {
+      const entry = lt.find((l, i) => (l.segment_index ?? i) === seg);
+      const lapNum = entry?.lap ?? seg + 1;
+      labels.push(seg === 0 ? `Lap ${lapNum} (out-lap)` : `Lap ${lapNum}`);
+    }
+    return labels.join(', ');
+  }, [excludedLaps, dashData.lap_times]);
+
+  const handleDownloadPdf = useCallback(() => {
+    const scrollEl = document.querySelector('.section-grid-scroll') as HTMLElement | null;
+    const tableEl = scrollEl?.querySelector('.section-grid') as HTMLElement | null;
+
+    if (scrollEl && tableEl) {
+      const fullWidth = tableEl.scrollWidth;
+      // A4 landscape usable width: 297mm − 24mm margins = 273mm ≈ 1032px @96dpi
+      const usableWidth = 1032;
+      if (fullWidth > usableWidth) {
+        const ratio = Math.floor((usableWidth / fullWidth) * 1000) / 1000;
+        scrollEl.style.setProperty('--print-table-zoom', String(ratio));
+      }
+    }
+
+    const cleanup = () => {
+      scrollEl?.style.removeProperty('--print-table-zoom');
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+
+    window.print();
+  }, []);
 
   return (
     <div className="section-metrics" data-session={sessionId}>
-      <div className="vbl-card">
-        <span className="vbl-card-label">Virtual Best Lap</span>
-        <span className="vbl-card-time">
-          {virtualBestTotal != null ? formatSectionTime(virtualBestTotal) : '—'}
-        </span>
-        <span className="vbl-card-hint">Sum of best sector times (excl. out-lap)</span>
+      {sessionMeta && (
+        <div className="section-metrics-print-header print-only">
+          <h1 className="print-title">Section Metrics Report</h1>
+          <dl className="print-meta-grid">
+            {sessionMeta.track && <><dt>Track</dt><dd>{sessionMeta.track}</dd></>}
+            {sessionMeta.sessionType && <><dt>Session</dt><dd>{sessionMeta.sessionType}</dd></>}
+            {sessionMeta.driver && <><dt>Driver</dt><dd>{sessionMeta.driver}</dd></>}
+            {sessionMeta.car && <><dt>Car</dt><dd>{sessionMeta.car}</dd></>}
+            {sessionMeta.outingNumber && <><dt>Outing #</dt><dd>{sessionMeta.outingNumber}</dd></>}
+            {sessionMeta.sessionNumber && <><dt>Session #</dt><dd>{sessionMeta.sessionNumber}</dd></>}
+            {sessionMeta.lapCount != null && <><dt>Total Laps</dt><dd>{sessionMeta.lapCount}</dd></>}
+            {sessionMeta.fastestLapTime != null && (
+              <><dt>Fastest Lap</dt><dd>{formatSectionTime(sessionMeta.fastestLapTime)}</dd></>
+            )}
+            {sessionMeta.tireSet && <><dt>Tire Set</dt><dd>{sessionMeta.tireSet}</dd></>}
+            {sessionMeta.ambientTempC != null && (
+              <><dt>Ambient Temp</dt><dd>{sessionMeta.ambientTempC.toFixed(1)} °C</dd></>
+            )}
+            {sessionMeta.trackTempC != null && (
+              <><dt>Track Temp</dt><dd>{sessionMeta.trackTempC.toFixed(1)} °C</dd></>
+            )}
+            {excludedLapLabels && <><dt>Excluded Laps</dt><dd>{excludedLapLabels}</dd></>}
+            {sessionMeta.notes && <><dt>Notes</dt><dd>{sessionMeta.notes}</dd></>}
+          </dl>
+        </div>
+      )}
+
+      <div className="section-metrics-toolbar no-print">
+        <button type="button" className="btn btn-secondary btn-sm" onClick={handleDownloadPdf}>
+          Download PDF
+        </button>
+      </div>
+
+      <div className="vbl-card-row">
+        <div className="vbl-card vbl-card-actual">
+          <span className="vbl-card-label">Actual Best Lap</span>
+          <span className="vbl-card-time vbl-card-time-actual">
+            {fastestLapTime != null ? formatSectionTime(fastestLapTime) : '—'}
+          </span>
+          <span className="vbl-card-hint">Fastest lap</span>
+        </div>
+        <div className="vbl-card">
+          <span className="vbl-card-label">Virtual Best Lap</span>
+          <span className="vbl-card-time">
+            {virtualBestTotal != null ? formatSectionTime(virtualBestTotal) : '—'}
+          </span>
+          <span className="vbl-card-hint">Sum of best sector times</span>
+        </div>
+        {virtualBestTotal != null && fastestLapTime != null && (
+          <div className="vbl-card vbl-card-delta">
+            <span className="vbl-card-label">Potential Gain</span>
+            <span className="vbl-card-time vbl-card-time-delta">
+              {formatDelta(Math.round((virtualBestTotal - fastestLapTime) * 1000) / 1000)}
+            </span>
+            <span className="vbl-card-hint">Virtual − Actual</span>
+          </div>
+        )}
       </div>
 
       {improvement.length > 0 && (
         <div className="improvement-block">
           <h4 className="improvement-heading">Improvement opportunities</h4>
-          <ul className="improvement-list">
+          <div className="improvement-tiles">
             {improvement.slice(0, 12).map((row, rank) => (
-              <li key={row.index} className={`improvement-item${rank < 3 ? ' improvement-item-top' : ''}`}>
-                <span className="improvement-rank">{rank + 1}</span>
-                <div className="improvement-body">
-                  <div className="improvement-title">{row.name}</div>
-                  <div className="improvement-meta">
-                    <span>Avg loss vs best: +{row.avgDelta.toFixed(3)}s</span>
-                    <span className="improvement-sep">·</span>
-                    <span>Best in section: {formatSectionTime(row.vbDuration)}</span>
-                  </div>
-                </div>
-              </li>
+              <div key={row.index} className={`improvement-tile${rank < 3 ? ' improvement-tile-top' : ''}`}>
+                <span className="improvement-tile-rank">{rank + 1}</span>
+                <span className="improvement-tile-name">{row.name}</span>
+                <span className="improvement-tile-delta">Avg. Δ +{row.avgDelta.toFixed(3)}s</span>
+                <span className="improvement-tile-best">{formatSectionTime(row.vbDuration)}</span>
+              </div>
             ))}
-          </ul>
+          </div>
         </div>
       )}
 
-      <div className="section-badge-row">
-        {sectionDefs.map((s, si) => (
-          <span
-            key={`${s.name}-${si}`}
-            className="section-badge"
-            title={`${metersToDistanceDisplay(s.start_distance, distanceUnit).toFixed(3)}–${metersToDistanceDisplay(s.end_distance, distanceUnit).toFixed(3)} ${distanceUnit}`}
-          >
-            <span className="section-badge-name">{s.name}</span>
-            <span className="section-badge-time">
-              {sectionBestTimes[si] != null ? formatSectionTime(sectionBestTimes[si]!) : '—'}
-            </span>
-          </span>
-        ))}
+      <div className="improvement-block">
+        <h4 className="improvement-heading">Fastest sections</h4>
+        <div className="improvement-tiles">
+          {sectionDefs.map((s, si) => (
+            <div
+              key={`${s.name}-${si}`}
+              className="improvement-tile section-best-tile"
+              title={`${metersToDistanceDisplay(s.start_distance, distanceUnit).toFixed(3)}–${metersToDistanceDisplay(s.end_distance, distanceUnit).toFixed(3)} ${distanceUnit}`}
+            >
+              <span className="improvement-tile-name">{s.name}</span>
+              <span className="section-best-tile-time">
+                {sectionBestTimes[si] != null ? formatSectionTime(sectionBestTimes[si]!) : '—'}
+              </span>
+              <span className="section-best-tile-lap">
+                {sectionBestLaps[si] != null ? `Lap ${sectionBestLaps[si]}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="section-grid-scroll">
         <table className="section-grid">
           <thead>
             <tr>
-              <th className="section-grid-sticky">Lap</th>
+              {onToggleExcludeLap && (
+                <th className="section-grid-sticky section-excl-col" title="Exclude from analysis">
+                  Excl
+                </th>
+              )}
+              <th className="section-grid-sticky section-lap-col-header">Lap</th>
               {sectionDefs.map((s, si) => (
                 <th key={`h-${si}`} className={si > 0 ? 'section-grid-sec-start' : ''}>
                   <div className="section-grid-th-inner">{s.name}</div>
@@ -403,47 +603,119 @@ export default function SectionMetrics({
           <tbody>
             {grid.map((row, li) => {
               const lt = lapTimes[li];
+              const segIdx = lt?.segment_index ?? li;
               const lapLabel = lt ? String(lt.lap) : String(li + 1);
+              const lapTime = lt?.time ?? null;
+              const lapDelta =
+                lapTime != null && fastestLapTime != null
+                  ? Math.round((lapTime - fastestLapTime) * 1000) / 1000
+                  : null;
               const isOut = li === 0;
               const isFast = fastIdx != null && li === fastIdx;
+              const rowExcluded = excludedSetRender.has(segIdx);
               return (
                 <tr
                   key={`lap-${li}`}
-                  className={`section-grid-row${isOut ? ' section-row-outlap' : ''}${isFast ? ' section-row-fast' : ''}${onZoomToLap ? ' section-grid-row-clickable' : ''}`}
+                  className={`section-grid-row${isOut ? ' section-row-outlap' : ''}${isFast ? ' section-row-fast' : ''}${rowExcluded ? ' section-row-excluded' : ''}${onZoomToLap ? ' section-grid-row-clickable' : ''}`}
                   onClick={() => onRowClick(li)}
                 >
-                  <th className="section-grid-sticky" scope="row">
-                    {lapLabel}
-                    {isFast && <span className="section-lap-fast">★</span>}
+                  {onToggleExcludeLap && (
+                    <td
+                      className="section-grid-sticky section-excl-col"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={rowExcluded}
+                        title="Exclude lap from virtual best / averages"
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => onToggleExcludeLap(segIdx)}
+                        aria-label={`Exclude lap ${lapLabel} from analysis`}
+                      />
+                    </td>
+                  )}
+                  <th className="section-grid-sticky section-lap-col" scope="row">
+                    <div className="section-lap-col-label">
+                      {lapLabel}
+                      {isFast && <span className="section-lap-fast">★</span>}
+                    </div>
+                    <div className="section-lap-col-time">
+                      {lapTime != null ? formatSectionTime(lapTime) : '—'}
+                    </div>
+                    {lapDelta != null && (
+                      <div
+                        className={`section-lap-col-delta ${deltaClass(lapDelta, lapDelta < 0.0005)}`}
+                      >
+                        Δ {formatDelta(lapDelta)}
+                      </div>
+                    )}
                   </th>
                   {row.map((cell, si) => {
                     const vb = bestDur[si];
                     const dur = cell.duration;
-                    const delta = dur != null && vb != null ? Math.round((dur - vb) * 1000) / 1000 : null;
+                    const delta =
+                      dur != null && vb != null
+                        ? Math.round((dur - vb) * 1000) / 1000
+                        : null;
                     const isBest = delta != null && delta < 0.0005;
                     const dClass = deltaClass(delta, isBest);
+                    const isExpanded =
+                      selectedCell?.li === li && selectedCell?.si === si;
                     return (
                       <td
                         key={`c-${li}-${si}`}
-                        className={`section-grid-cell${si > 0 ? ' section-grid-sec-start' : ''}`}
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={isExpanded}
+                        aria-label={`${sectionDefs[si].name}, Lap ${lapLabel}: ${dur != null ? formatSectionTime(dur) : 'no data'}${delta != null ? `, delta ${formatDelta(delta)}` : ''}`}
+                        className={`section-grid-cell${si > 0 ? ' section-grid-sec-start' : ''}${isExpanded ? ' section-cell-expanded' : ''}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedCell(isExpanded ? null : { li, si });
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setSelectedCell(isExpanded ? null : { li, si });
+                          }
+                        }}
                       >
                         <div className="section-cell-stack">
-                          <div className="section-cell-time">{dur != null ? formatSectionTime(dur) : '—'}</div>
-                          <div className="section-cell-sub">
-                            <span>
-                              {cell.minSpeed != null
-                                ? (distanceUnit === 'mi'
-                                    ? (cell.minSpeed * KMH_TO_MPH).toFixed(1)
-                                    : cell.minSpeed.toFixed(1))
-                                : '—'}{' '}
-                              {distanceUnit === 'mi' ? 'mph' : 'km/h'} min
-                            </span>
-                            <span className="section-cell-sep">·</span>
-                            <span>Brk {cell.maxBrake != null ? cell.maxBrake.toFixed(2) : '—'}</span>
+                          <div className="section-cell-time">
+                            {dur != null ? formatSectionTime(dur) : '—'}
                           </div>
                           <div className={`section-cell-delta ${dClass}`}>
                             {delta != null ? `Δ ${formatDelta(delta)}` : '—'}
                           </div>
+                          {isExpanded && (
+                            <div className="section-cell-detail">
+                              <div className="section-detail-grid">
+                                <span className="section-detail-hdr" />
+                                <span className="section-detail-hdr">Min</span>
+                                <span className="section-detail-hdr">Max</span>
+                                <span className="section-detail-hdr">Avg</span>
+                                <span className="section-detail-hdr" />
+
+                                <span className="section-detail-label">Speed</span>
+                                <span>{fmtSpd(cell.minSpeed)}</span>
+                                <span>{fmtSpd(cell.maxSpeed)}</span>
+                                <span>{fmtSpd(cell.avgSpeed)}</span>
+                                <span className="section-detail-unit">{speedUnit}</span>
+
+                                <span className="section-detail-label">Throttle</span>
+                                <span>{fmtThr(cell.minThrottle)}</span>
+                                <span>{fmtThr(cell.maxThrottle)}</span>
+                                <span>{fmtThr(cell.avgThrottle)}</span>
+                                <span className="section-detail-unit">%</span>
+
+                                <span className="section-detail-label">Brake</span>
+                                <span>{fmtBrk(cell.minBrake)}</span>
+                                <span>{fmtBrk(cell.maxBrake)}</span>
+                                <span>{fmtBrk(cell.avgBrake)}</span>
+                                <span className="section-detail-unit">{pressureUnit}</span>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </td>
                     );

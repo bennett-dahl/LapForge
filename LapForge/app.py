@@ -44,6 +44,7 @@ from LapForge.processing import (
     CHART_Y_MIN_PSI,
     DEFAULT_TARGET_PSI,
     PIPELINE_VERSION,
+    extract_reference_lap_from_session_blob,
     needs_reprocess as check_needs_reprocess,
     patch_pressure_summaries,
     process_session,
@@ -276,44 +277,8 @@ def create_app() -> Flask:
             "yMax": y_max,
         }
 
-    def _build_dashboard_data(sd: dict, session: Any, st: Any) -> dict | None:
-        """Build a complete dashboard blob for the SPA from v2 session data."""
-        times = sd.get("times") or []
-        distances = sd.get("distances") or []
-        series = sd.get("series") or {}
-        channel_meta = sd.get("channel_meta") or {}
-        summary_blob = sd.get("summary") or {}
-        lap_splits = sd.get("lap_splits") or []
-        lap_split_distances = sd.get("lap_split_distances") or lap_splits
-        has_distance = bool(distances)
-
-        cat_groups: dict[str, list[str]] = {}
-        for cname, cmeta in channel_meta.items():
-            cat = cmeta.get("category", "other")
-            cat_groups.setdefault(cat, []).append(cname)
-
-        # Build per-lap times from split boundaries
-        lap_splits_for_times = lap_splits or sd.get("lap_split_times") or []
-        lap_times_raw = summary_blob.get("lap_times")
-        fast_idx = None
-        lap_times = []
-        if lap_times_raw:
-            for i, lt in enumerate(lap_times_raw):
-                t = lt if isinstance(lt, (int, float)) else lt.get("time", lt) if isinstance(lt, dict) else 0
-                lap_times.append({"lap": i + 1, "time": t})
-                if fast_idx is None or t < lap_times[fast_idx]["time"]:
-                    fast_idx = i
-        elif len(lap_splits_for_times) >= 2:
-            for i in range(len(lap_splits_for_times) - 1):
-                dt = lap_splits_for_times[i + 1] - lap_splits_for_times[i]
-                if dt > 0:
-                    lap_times.append({"lap": i + 1, "time": round(dt, 3)})
-                    if fast_idx is None or dt < lap_times[fast_idx]["time"]:
-                        fast_idx = len(lap_times) - 1
-
-        # Build GPS points from reference_lap (stored as parallel arrays, not point dicts)
-        reference_lap = sd.get("reference_lap") or {}
-        gps_points = []
+    def _gps_points_from_reference_lap(reference_lap: dict) -> list[dict[str, Any]]:
+        gps_points: list[dict[str, Any]] = []
         ref_points = reference_lap.get("points") or []
         if ref_points:
             for pt in ref_points:
@@ -334,6 +299,146 @@ def create_app() -> Flask:
                         "lng": lon_v,
                         "distance": ref_dist[i] if i < len(ref_dist) else 0,
                     })
+        return gps_points
+
+    def _gps_points_with_session_distance(
+        reference_lap: dict,
+        lap_split_distances: list[float],
+    ) -> list[dict[str, Any]]:
+        """Shift reference-lap point distances to session cumulative (matches chart / cursor)."""
+        pts = _gps_points_from_reference_lap(reference_lap)
+        if not pts or not lap_split_distances:
+            return pts
+        lap_idx = reference_lap.get("lap_index")
+        if lap_idx is None:
+            return pts
+        try:
+            li = int(lap_idx)
+        except (TypeError, ValueError):
+            return pts
+        if li < 0 or li >= len(lap_split_distances):
+            return pts
+        try:
+            base = float(lap_split_distances[li])
+        except (TypeError, ValueError):
+            return pts
+        out: list[dict[str, Any]] = []
+        for p in pts:
+            q = dict(p)
+            d = q.get("distance")
+            try:
+                q["distance"] = base + (float(d) if d is not None else 0.0)
+            except (TypeError, ValueError):
+                q["distance"] = base
+            out.append(q)
+        return out
+
+    def _reference_lap_has_geometry(ref: dict) -> bool:
+        if not isinstance(ref, dict):
+            return False
+        pts = ref.get("points")
+        if isinstance(pts, list) and len(pts) >= 2:
+            return True
+        lat = ref.get("lat") or []
+        lon = ref.get("lon") or []
+        return (
+            isinstance(lat, list)
+            and isinstance(lon, list)
+            and len(lat) >= 2
+            and len(lon) >= 2
+        )
+
+    def _build_dashboard_data(sd: dict, session: Any, st: Any) -> dict | None:
+        """Build a complete dashboard blob for the SPA from v2 session data."""
+        times = sd.get("times") or []
+        distances = sd.get("distances") or []
+        series = sd.get("series") or {}
+        channel_meta = sd.get("channel_meta") or {}
+        summary_blob = sd.get("summary") or {}
+        lap_splits = sd.get("lap_splits") or []
+        lap_split_distances = sd.get("lap_split_distances") or lap_splits
+        has_distance = bool(distances)
+
+        cat_groups: dict[str, list[str]] = {}
+        for cname, cmeta in channel_meta.items():
+            cat = cmeta.get("category", "other")
+            cat_groups.setdefault(cat, []).append(cname)
+
+        # Build per-lap times from split boundaries
+        lap_splits_for_times = lap_splits or sd.get("lap_split_times") or []
+        lap_times_raw = summary_blob.get("lap_times")
+        lap_times = []
+        if lap_times_raw:
+            for i, lt in enumerate(lap_times_raw):
+                t = lt if isinstance(lt, (int, float)) else lt.get("time", lt) if isinstance(lt, dict) else 0
+                lap_times.append({"lap": i + 1, "time": t, "segment_index": i})
+        elif len(lap_splits_for_times) >= 2:
+            for i in range(len(lap_splits_for_times) - 1):
+                dt = lap_splits_for_times[i + 1] - lap_splits_for_times[i]
+                if dt > 0:
+                    lap_times.append({"lap": i + 1, "time": round(dt, 3), "segment_index": i})
+
+        # Excluded segment indices. If never saved, default excludes segment 0 (typical out-lap).
+        excluded_raw = sd.get("excluded_laps")
+        if isinstance(excluded_raw, list):
+            excluded_set = {int(x) for x in excluded_raw if isinstance(x, (int, float))}
+        else:
+            excluded_set = {0}
+        excluded_list = sorted(excluded_set)
+
+        fast_idx_effective: int | None = None
+        for i, lt in enumerate(lap_times):
+            seg = int(lt["segment_index"]) if isinstance(lt.get("segment_index"), (int, float)) else i
+            if seg in excluded_set:
+                continue
+            t = float(lt["time"])
+            if fast_idx_effective is None or t < float(lap_times[fast_idx_effective]["time"]):
+                fast_idx_effective = i
+
+        reference_lap = sd.get("reference_lap") if isinstance(sd.get("reference_lap"), dict) else {}
+        if not _reference_lap_has_geometry(reference_lap):
+            merged_ref = None
+            if session.track_layout_id:
+                merged_ref = st.get_track_layout_ref(session.track_layout_id)
+            if (not merged_ref or not _reference_lap_has_geometry(merged_ref)) and session.track:
+                merged_ref = st.get_track_layout(session.track)
+            if merged_ref and _reference_lap_has_geometry(merged_ref):
+                reference_lap = merged_ref
+        lsd = lap_split_distances if isinstance(lap_split_distances, list) else []
+        gps_points = _gps_points_with_session_distance(reference_lap, lsd)
+        local_gps_points = _gps_points_from_reference_lap(reference_lap)
+
+        map_lap_blob: dict[str, Any] | None = None
+        if _reference_lap_has_geometry(reference_lap):
+            ref_dists = reference_lap.get("distances_raw") or reference_lap.get("distance") or []
+            ref_times = reference_lap.get("times") or []
+            ref_series = reference_lap.get("series") or {}
+            ref_ch_meta = reference_lap.get("channel_meta") or channel_meta
+            lap_length = max(ref_dists) if ref_dists else 0.0
+
+            layout_obj = st.get_track_layout_by_id(session.track_layout_id) if session.track_layout_id else None
+            src: dict[str, Any] = {
+                "lap_index": reference_lap.get("lap_index"),
+                "lap_time": reference_lap.get("lap_time"),
+            }
+            if layout_obj:
+                src["driver"] = layout_obj.source_driver
+                src["car"] = layout_obj.source_car
+                src["session_name"] = layout_obj.source_session_name
+            else:
+                src["driver"] = session.driver
+                src["car"] = session.car
+                src["session_name"] = f"{session.track} — {session.session_type.value}" if session.track else None
+
+            map_lap_blob = {
+                "distances": ref_dists,
+                "times": ref_times,
+                "series": ref_series,
+                "channel_meta": ref_ch_meta,
+                "points": local_gps_points,
+                "lap_length": lap_length,
+                "source": src,
+            }
 
         sections = []
         track_sections = st.list_track_sections(session.track) if session.track else []
@@ -364,12 +469,18 @@ def create_app() -> Flask:
             "lap_split_distances": lap_split_distances,
             "lap_times": lap_times,
             "has_distance": has_distance,
-            "fast_lap_index": fast_idx,
+            "fast_lap_index": fast_idx_effective,
             "sections": sections,
             "points": gps_points,
             "tire_summary": tire_summary,
             "target_pressure_psi": target_psi,
             "raw_pressure_series": raw_pres_out,
+            "excluded_laps": excluded_list,
+            "reference_lap_index": reference_lap.get("lap_index"),
+            "raw_times": sd.get("raw_times") or [],
+            "raw_distances": sd.get("raw_distances") or [],
+            "map_lap_segment_index": sd.get("map_lap_segment_index"),
+            "map_lap": map_lap_blob,
         }
 
     def _build_chart_data_v2(session_data: dict, use_psi: bool, target_psi: float | None = None) -> dict | None:
@@ -931,7 +1042,13 @@ def create_app() -> Flask:
             parsed = load_pi_toolbox_export(str(fp))
             proc = session.parsed_data or {}
             level = int(proc.get("smoothing_level", 0)) + 1
-            processed = process_session(parsed, smoothing_level=level, target_psi=_session_target_psi(session))
+            existing_blob = proc if isinstance(proc, dict) else None
+            processed = process_session(
+                parsed,
+                smoothing_level=level,
+                target_psi=_session_target_psi(session),
+                existing_blob=existing_blob,
+            )
             session.parsed_data = processed
             store.update_session(session)
         except Exception:
@@ -965,7 +1082,9 @@ def create_app() -> Flask:
                         )
                     else:
                         gen = process_session_streaming(
-                            parsed, target_psi=_session_target_psi(session),
+                            parsed,
+                            target_psi=_session_target_psi(session),
+                            existing_blob=existing,
                         )
                     for pct, stage_label, data in gen:
                         label_part = f":{stage_label}" if stage_label else ""
@@ -986,7 +1105,13 @@ def create_app() -> Flask:
 
         try:
             parsed = load_pi_toolbox_export(str(fp))
-            processed = process_session(parsed, smoothing_level=0, target_psi=_session_target_psi(session))
+            existing_blob = session.parsed_data if isinstance(session.parsed_data, dict) else None
+            processed = process_session(
+                parsed,
+                smoothing_level=0,
+                target_psi=_session_target_psi(session),
+                existing_blob=existing_blob,
+            )
             session.parsed_data = sanitize_for_json(processed)
             store.update_session(session)
         except Exception:
@@ -1031,9 +1156,15 @@ def create_app() -> Flask:
                     ref_lap = sess.parsed_data.get("reference_lap")
         if ref_lap and isinstance(ref_lap, dict):
             source_lap_index = ref_lap.get("lap_index")
+            sec_meta: dict[str, str | None] = {}
+            if source_session_id:
+                sec_sess = store.get_session(source_session_id)
+                if sec_sess:
+                    sec_meta = _session_layout_meta(sec_sess)
             store.upsert_track_layout(track_name, ref_lap,
                                       source_session_id=source_session_id,
-                                      source_lap_index=source_lap_index)
+                                      source_lap_index=source_lap_index,
+                                      **sec_meta)
 
         return jsonify({"ok": True, "sections": saved})
 
@@ -1097,10 +1228,12 @@ def create_app() -> Flask:
         if not ref_lap:
             return jsonify({"error": "Session has no reference lap data"}), 400
         track_name = sess.track or "unknown"
+        meta = _session_layout_meta(sess)
         layout = store.add_track_layout(
             name=name, track_name=track_name, reference_lap=ref_lap,
             source_session_id=source_session_id,
             source_lap_index=source_lap_index if source_lap_index is not None else ref_lap.get("lap_index"),
+            **meta,
         )
         return jsonify({"ok": True, "layout": layout.to_dict()})
 
@@ -1545,18 +1678,164 @@ def create_app() -> Flask:
             "is_v2": is_v2,
         })
 
+    def _apply_excluded_laps_to_session(sess: Session, laps: list[Any]) -> list[int]:
+        excluded_set: set[int] = set()
+        for x in laps:
+            try:
+                excluded_set.add(int(x))
+            except (TypeError, ValueError):
+                raise ValueError("invalid_lap_indices") from None
+        excluded = sorted(excluded_set)
+        pd = dict(sess.parsed_data) if isinstance(sess.parsed_data, dict) else {}
+        pd["excluded_laps"] = excluded
+        sess.parsed_data = sanitize_for_json(pd)
+        return excluded
+
+    def _session_layout_meta(sess: Session) -> dict[str, str | None]:
+        """Extract driver/car/session-name from a Session for track-layout metadata."""
+        sess_name = f"{sess.track} — {sess.session_type.value}" if sess.track else sess.session_type.value
+        return {
+            "source_driver": sess.driver or None,
+            "source_car": sess.car or None,
+            "source_session_name": sess_name,
+        }
+
+    def _apply_reference_lap_to_session(sess: Session, lap_index: int) -> dict[str, Any]:
+        pd_raw = sess.parsed_data if isinstance(sess.parsed_data, dict) else None
+        if not pd_raw:
+            raise ValueError("no_processed_data")
+        ref = extract_reference_lap_from_session_blob(pd_raw, lap_index)
+        if not ref:
+            raise ValueError("bad_lap_index")
+        pd = dict(pd_raw)
+        pd["reference_lap"] = ref
+        pd["map_lap_segment_index"] = lap_index
+        sess.parsed_data = sanitize_for_json(pd)
+        meta = _session_layout_meta(sess)
+        if sess.track_layout_id:
+            store.update_track_layout(
+                sess.track_layout_id,
+                reference_lap=ref,
+                source_lap_index=lap_index,
+                source_session_id=sess.id,
+                **meta,
+            )
+        elif sess.track:
+            layout = store.upsert_track_layout(
+                sess.track,
+                ref,
+                source_session_id=sess.id,
+                source_lap_index=lap_index,
+                **meta,
+            )
+            sess.track_layout_id = layout.id
+        lsd = pd.get("lap_split_distances") or pd.get("lap_splits") or []
+        lsd_list = lsd if isinstance(lsd, list) else []
+        points = _gps_points_with_session_distance(ref, lsd_list)
+        return {"reference_lap": ref, "points": points, "reference_lap_index": lap_index}
+
     @app.route("/api/sessions/<sid>", methods=["PATCH"])
     def api_session_update(sid: str):
         session = store.get_session(sid)
         if not session:
             return jsonify({"error": "Not found"}), 404
         data = request.get_json(silent=True) or {}
-        for field in ("tire_set_id", "track_layout_id", "ambient_temp_c", "track_temp_c",
-                       "target_pressure_psi", "lap_count_notes"):
+        out: dict[str, Any] = {"ok": True}
+
+        if "excluded_laps" in data:
+            laps = data["excluded_laps"]
+            if not isinstance(laps, list):
+                return jsonify({"error": "excluded_laps must be a list"}), 400
+            try:
+                out["excluded_laps"] = _apply_excluded_laps_to_session(session, laps)
+            except ValueError as e:
+                if str(e) != "invalid_lap_indices":
+                    raise
+                return jsonify({"error": "invalid lap indices"}), 400
+
+        if "apply_reference_lap_index" in data:
+            try:
+                lap_index = int(data["apply_reference_lap_index"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "invalid apply_reference_lap_index"}), 400
+            try:
+                out.update(_apply_reference_lap_to_session(session, lap_index))
+            except ValueError as e:
+                code = str(e)
+                if code == "no_processed_data":
+                    return jsonify({"error": "Session has no processed data"}), 400
+                if code == "bad_lap_index":
+                    return jsonify({"error": "Cannot build reference lap for that lap index"}), 400
+                raise
+
+        if "session_type" in data:
+            from .models import SessionType as ST
+            raw_type = str(data["session_type"]).strip()
+            matched = None
+            for st_val in ST:
+                if st_val.value == raw_type or st_val.name == raw_type:
+                    matched = st_val
+                    break
+            if matched:
+                session.session_type = matched
+
+        for field in ("tire_set_id", "track_layout_id", "car_driver_id",
+                       "ambient_temp_c", "track_temp_c",
+                       "target_pressure_psi", "lap_count_notes",
+                       "track", "driver", "car", "outing_number", "session_number"):
             if field in data:
                 setattr(session, field, data[field])
+
+        if "car_driver_id" in data and data["car_driver_id"]:
+            cd = store.get_car_driver(data["car_driver_id"])
+            if cd:
+                session.driver = cd.driver_name
+                session.car = cd.car_identifier
+
         store.update_session(session)
-        return jsonify({"ok": True})
+        return jsonify(out)
+
+    @app.route("/api/sessions/<sid>/excluded-laps", methods=["PATCH"])
+    def api_session_excluded_laps(sid: str):
+        session = store.get_session(sid)
+        if not session:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        laps = data.get("excluded_laps")
+        if not isinstance(laps, list):
+            return jsonify({"error": "excluded_laps must be a list"}), 400
+        try:
+            excluded = _apply_excluded_laps_to_session(session, laps)
+        except ValueError as e:
+            if str(e) != "invalid_lap_indices":
+                raise
+            return jsonify({"error": "invalid lap indices"}), 400
+        store.update_session(session)
+        return jsonify({"excluded_laps": excluded})
+
+    @app.route("/api/sessions/<sid>/reference-lap", methods=["POST"])
+    def api_session_reference_lap(sid: str):
+        session = store.get_session(sid)
+        if not session:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        if data.get("lap_index") is None:
+            return jsonify({"error": "lap_index required"}), 400
+        try:
+            lap_index = int(data["lap_index"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid lap_index"}), 400
+        try:
+            payload = _apply_reference_lap_to_session(session, lap_index)
+        except ValueError as e:
+            code = str(e)
+            if code == "no_processed_data":
+                return jsonify({"error": "Session has no processed data"}), 400
+            if code == "bad_lap_index":
+                return jsonify({"error": "Cannot build reference lap for that lap index"}), 400
+            raise
+        store.update_session(session)
+        return jsonify(payload)
 
     @app.route("/api/sessions-full")
     def api_sessions_full():
@@ -1623,6 +1902,7 @@ def create_app() -> Flask:
                     gen = process_session_streaming(
                         parsed,
                         target_psi=_session_target_psi(session),
+                        existing_blob=existing,
                     )
                 for pct, stage_label, data in gen:
                     yield f"data: {json.dumps({'event': 'progress', 'pct': pct, 'stage': stage_label or 'Processing'})}\n\n"

@@ -295,6 +295,32 @@ class TestNeedsReprocess:
         assert needs_reprocess(result) is True
 
 
+class TestMapLapPersistence:
+    def test_existing_blob_preserves_user_map_lap(self, sample_parsed):
+        first = process_session(sample_parsed)
+        splits = first.get("lap_splits") or []
+        assert len(splits) >= 2
+        n_seg = len(splits) - 1
+        chosen = None
+        for i in range(n_seg):
+            if splits[i + 1] - splits[i] > 0:
+                chosen = i
+                break
+        assert chosen is not None
+        blob = dict(first)
+        blob["map_lap_segment_index"] = chosen
+        second = process_session(sample_parsed, existing_blob=blob)
+        assert second.get("map_lap_segment_index") == chosen
+        assert second.get("reference_lap", {}).get("lap_index") == chosen
+
+    def test_invalid_map_lap_index_not_in_output(self, sample_parsed):
+        first = process_session(sample_parsed)
+        blob = dict(first)
+        blob["map_lap_segment_index"] = 99999
+        second = process_session(sample_parsed, existing_blob=blob)
+        assert "map_lap_segment_index" not in second
+
+
 class TestPatchPressureSummaries:
     def test_updates_target(self, sample_parsed):
         result = process_session(sample_parsed)

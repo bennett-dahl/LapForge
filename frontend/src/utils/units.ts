@@ -5,6 +5,18 @@ export type PressureUnit = 'psi' | 'bar';
 export type TempUnit = 'c' | 'f';
 /** Matches backend `_PREF_DEFAULTS.default_distance_unit` (`km` | `mi`). */
 export type DistanceUnit = 'km' | 'mi';
+export type SpeedUnit = 'km/h' | 'mph';
+
+export const KMH_TO_MPH = 0.621371;
+
+export function convertSpeed(kmh: number, to: SpeedUnit): number {
+  if (!Number.isFinite(kmh)) return kmh;
+  return to === 'mph' ? kmh * KMH_TO_MPH : kmh;
+}
+
+export function speedLabel(unit: SpeedUnit): string {
+  return unit;
+}
 
 const METERS_PER_MI = 1609.344;
 

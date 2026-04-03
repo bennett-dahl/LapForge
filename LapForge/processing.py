@@ -374,52 +374,23 @@ def _smooth_gps_trace(
     return out_lat, out_lon, out_d
 
 
-def build_reference_lap(ctx: dict) -> None:
-    """Find the fastest *complete* lap and extract GPS trace for it."""
-    lap_splits: list[float] = ctx["parsed"].get("lap_split_times") or []
-    full_times: list[float] = ctx["full_times"]
-    full_series: dict[str, list[float | None]] = ctx["full_series"]
-    full_distances: list[float] = ctx.get("full_distances", [])
+def _build_reference_lap_at_index(
+    lap_splits: list[float],
+    lap_index: int,
+    full_times: list[float],
+    full_series: dict[str, list[float | None]],
+    full_distances: list[float],
+    channel_meta: dict[str, dict],
+) -> dict | None:
+    """Extract GPS trace for lap segment ``lap_index`` (0-based; segment i is splits[i]..splits[i+1])."""
+    if len(lap_splits) < 2 or lap_index < 0 or lap_index >= len(lap_splits) - 1:
+        return None
+    lap_start = lap_splits[lap_index]
+    lap_end = lap_splits[lap_index + 1]
+    best_time = lap_end - lap_start
+    if best_time <= 0:
+        return None
 
-    if len(lap_splits) < 2:
-        ctx["reference_lap"] = None
-        return
-
-    n_segments = len(lap_splits) - 1
-
-    candidate_times: list[tuple[int, float]] = []
-    for i in range(n_segments):
-        if i == 0:
-            continue
-        dt = lap_splits[i + 1] - lap_splits[i]
-        if dt > 0:
-            candidate_times.append((i, dt))
-
-    if not candidate_times:
-        for i in range(n_segments):
-            dt = lap_splits[i + 1] - lap_splits[i]
-            if dt > 0:
-                candidate_times.append((i, dt))
-
-    if not candidate_times:
-        ctx["reference_lap"] = None
-        return
-
-    times_only = [ct[1] for ct in candidate_times]
-    times_only.sort()
-    median_dt = times_only[len(times_only) // 2]
-
-    valid = [(i, dt) for i, dt in candidate_times if dt >= 0.7 * median_dt]
-    if not valid:
-        valid = candidate_times
-
-    best_idx, best_time = min(valid, key=lambda x: x[1])
-
-    lap_start = lap_splits[best_idx]
-    lap_end = lap_splits[best_idx + 1]
-
-    # Resolve GPS columns
-    channel_meta: dict[str, dict] = ctx.get("channel_meta", {})
     categories = categorize_channels(channel_meta)
     gps_cols = categories.get("gps", [])
 
@@ -438,10 +409,8 @@ def build_reference_lap(ctx: dict) -> None:
             heading_col = heading_col or col
 
     if lat_col is None or lon_col is None:
-        ctx["reference_lap"] = None
-        return
+        return None
 
-    # Extract slice for the fastest lap
     i_start = bisect.bisect_left(full_times, lap_start)
     i_end = bisect.bisect_right(full_times, lap_end)
 
@@ -452,12 +421,10 @@ def build_reference_lap(ctx: dict) -> None:
     )
     raw_distance = full_distances[i_start:i_end] if full_distances else []
 
-    # Zero-base the raw distance so it always starts at 0
     if raw_distance:
         d0 = raw_distance[0]
         raw_distance = [d - d0 for d in raw_distance]
 
-    # Smooth the GPS trace to remove quantisation noise
     if raw_distance and len(raw_distance) == len(raw_lat):
         sm_lat, sm_lon, sm_dist = _smooth_gps_trace(raw_lat, raw_lon, raw_distance)
     else:
@@ -465,15 +432,151 @@ def build_reference_lap(ctx: dict) -> None:
         sm_lon = [v for v in raw_lon if v is not None]
         sm_dist = raw_distance
 
-    ctx["reference_lap"] = {
-        "lap_index": best_idx,
+    gps_col_set = {lat_col, lon_col}
+    if heading_col:
+        gps_col_set.add(heading_col)
+
+    lap_series: dict[str, list] = {}
+    for ch_name, ch_vals in full_series.items():
+        if ch_name in gps_col_set:
+            continue
+        sliced = ch_vals[i_start:i_end]
+        if sliced:
+            lap_series[ch_name] = sliced
+
+    lap_times = full_times[i_start:i_end]
+    t0 = lap_times[0] if lap_times else 0.0
+    lap_times = [t - t0 for t in lap_times]
+
+    return {
+        "lap_index": lap_index,
         "lap_time": round(best_time, 4),
         "complete_lap": True,
         "lat": sm_lat,
         "lon": sm_lon,
         "heading": raw_heading,
         "distance": sm_dist,
+        "distances_raw": raw_distance,
+        "times": lap_times,
+        "series": lap_series,
+        "channel_meta": dict(channel_meta),
     }
+
+
+def extract_reference_lap_from_session_blob(session_blob: dict, lap_index: int) -> dict | None:
+    """Build ``reference_lap`` from a v2 stored session blob (``parsed_data``) for a chosen lap index."""
+    lap_splits = session_blob.get("lap_splits") or session_blob.get("lap_split_times") or []
+    full_times = session_blob.get("raw_times") or []
+    full_series = session_blob.get("raw_series") or {}
+    full_distances = session_blob.get("raw_distances") or []
+    channel_meta = session_blob.get("channel_meta") or {}
+    return _build_reference_lap_at_index(
+        lap_splits,
+        lap_index,
+        full_times,
+        full_series,
+        full_distances,
+        channel_meta,
+    )
+
+
+def _coerce_map_lap_segment_index(val: Any, n_segments: int) -> int | None:
+    """Return a valid 0-based segment index or None."""
+    if val is None:
+        return None
+    try:
+        i = int(val)
+    except (TypeError, ValueError):
+        return None
+    if i < 0 or i >= n_segments:
+        return None
+    return i
+
+
+def _map_lap_pref_from_existing(existing_blob: dict | None) -> Any:
+    """Read persisted user map-lap preference from a v2 blob (or None)."""
+    if not existing_blob:
+        return None
+    v = existing_blob.get("map_lap_segment_index")
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return int(v)
+    if isinstance(v, str) and v.strip().lstrip("-").isdigit():
+        return int(v)
+    return None
+
+
+def build_reference_lap(ctx: dict) -> None:
+    """Pick reference GPS: user ``map_lap_segment_index`` if set, else fastest valid lap."""
+    lap_splits: list[float] = ctx["parsed"].get("lap_split_times") or []
+    full_times: list[float] = ctx["full_times"]
+    full_series: dict[str, list[float | None]] = ctx["full_series"]
+    full_distances: list[float] = ctx.get("full_distances", [])
+    channel_meta: dict[str, dict] = ctx.get("channel_meta", {})
+
+    if len(lap_splits) < 2:
+        ctx["reference_lap"] = None
+        ctx["map_lap_segment_index"] = None
+        return
+
+    n_segments = len(lap_splits) - 1
+
+    pref = _coerce_map_lap_segment_index(ctx.get("map_lap_segment_index"), n_segments)
+    if pref is not None:
+        dt = lap_splits[pref + 1] - lap_splits[pref]
+        if dt > 0:
+            ctx["reference_lap"] = _build_reference_lap_at_index(
+                lap_splits,
+                pref,
+                full_times,
+                full_series,
+                full_distances,
+                channel_meta,
+            )
+            ctx["map_lap_segment_index"] = pref
+            return
+    ctx["map_lap_segment_index"] = None
+
+    candidate_times: list[tuple[int, float]] = []
+    for i in range(n_segments):
+        if i == 0:
+            continue
+        dt = lap_splits[i + 1] - lap_splits[i]
+        if dt > 0:
+            candidate_times.append((i, dt))
+
+    if not candidate_times:
+        for i in range(n_segments):
+            dt = lap_splits[i + 1] - lap_splits[i]
+            if dt > 0:
+                candidate_times.append((i, dt))
+
+    if not candidate_times:
+        ctx["reference_lap"] = None
+        ctx["map_lap_segment_index"] = None
+        return
+
+    times_only = [ct[1] for ct in candidate_times]
+    times_only.sort()
+    median_dt = times_only[len(times_only) // 2]
+
+    valid = [(i, dt) for i, dt in candidate_times if dt >= 0.7 * median_dt]
+    if not valid:
+        valid = candidate_times
+
+    best_idx, best_time = min(valid, key=lambda x: x[1])
+
+    ctx["reference_lap"] = _build_reference_lap_at_index(
+        lap_splits,
+        best_idx,
+        full_times,
+        full_series,
+        full_distances,
+        channel_meta,
+    )
 
 
 def build_summary(ctx: dict) -> None:
@@ -672,7 +775,7 @@ def get_stage_versions() -> dict[str, int]:
 
 def _build_result_blob(ctx: dict, smoothing_level: int, parsed: dict) -> dict:
     """Assemble the v2 stored blob from pipeline context."""
-    return {
+    out: dict[str, Any] = {
         "processed": True,
         "version": 2,
         "pipeline_version": PIPELINE_VERSION,
@@ -693,6 +796,10 @@ def _build_result_blob(ctx: dict, smoothing_level: int, parsed: dict) -> dict:
         "summary": ctx.get("summary", {}),
         "file_metadata": parsed.get("metadata") or {},
     }
+    ml = ctx.get("map_lap_segment_index")
+    if ml is not None:
+        out["map_lap_segment_index"] = int(ml)
+    return out
 
 
 def stale_stages(existing_blob: dict | None) -> list[str]:
@@ -726,12 +833,14 @@ def process_session(
     smoothing_level: int = 0,
     progress_cb: Callable[[int], None] | None = None,
     target_psi: float | None = None,
+    existing_blob: dict | None = None,
 ) -> dict:
     """Run the full pipeline and return a v2 stored blob."""
     ctx: dict[str, Any] = {
         "parsed": parsed,
         "smoothing_level": smoothing_level,
         "target_psi": target_psi or DEFAULT_TARGET_PSI,
+        "map_lap_segment_index": _map_lap_pref_from_existing(existing_blob),
     }
 
     total = len(PIPELINE_STEPS)
@@ -758,15 +867,18 @@ def process_session_streaming(
     parsed: dict,
     smoothing_level: int = 0,
     target_psi: float | None = None,
+    existing_blob: dict | None = None,
 ) -> Generator[tuple[int, str | None, dict | None], None, None]:
     """Generator yielding ``(pct, stage_label, None)`` during work, then ``(100, None, result)``.
 
     Uses weighted stages so the progress bar reflects actual compute cost.
+    When ``existing_blob`` is set (e.g. reprocess), ``map_lap_segment_index`` is preserved.
     """
     ctx: dict[str, Any] = {
         "parsed": parsed,
         "smoothing_level": smoothing_level,
         "target_psi": target_psi or DEFAULT_TARGET_PSI,
+        "map_lap_segment_index": _map_lap_pref_from_existing(existing_blob),
     }
 
     total_weight = sum(s["weight"] for s in STAGES)
@@ -805,7 +917,7 @@ def process_session_incremental(
 
     # If core is stale, everything downstream must re-run → full reprocess
     if "core" in stale:
-        yield from process_session_streaming(parsed, smoothing_level, target_psi)
+        yield from process_session_streaming(parsed, smoothing_level, target_psi, existing_blob)
         return
 
     # Rebuild ctx from existing blob so downstream stages can run
@@ -824,6 +936,7 @@ def process_session_incremental(
         "lap_split_distances": existing_blob.get("lap_split_distances", []),
         "reference_lap": existing_blob.get("reference_lap"),
         "summary": existing_blob.get("summary", {}),
+        "map_lap_segment_index": _map_lap_pref_from_existing(existing_blob),
     }
 
     # Mark stages downstream of any stale stage as needing re-run

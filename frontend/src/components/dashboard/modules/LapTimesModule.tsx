@@ -15,12 +15,15 @@ interface LapTime {
   lap: number;
   time: number;
   fast?: boolean;
+  segment_index?: number;
 }
 
 interface LapTimesModuleProps {
   lapTimes: LapTime[];
   fastIdx: number | null;
   onLapClick?: (lap: number) => void;
+  excludedLaps?: number[];
+  onToggleExcludeLap?: (segmentIndex: number) => void;
 }
 
 /** `m:ss.SSS` if ≥ 60s, else `ss.SSS`. */
@@ -45,22 +48,35 @@ function deltaClass(delta: number, isBest: boolean): string {
   return 'lap-delta-warn';
 }
 
-export default function LapTimesModule({ lapTimes, fastIdx, onLapClick }: LapTimesModuleProps) {
+export default function LapTimesModule({
+  lapTimes,
+  fastIdx,
+  onLapClick,
+  excludedLaps,
+  onToggleExcludeLap,
+}: LapTimesModuleProps) {
   if (!lapTimes.length) return <p className="muted">No lap times.</p>;
 
-  let bestIdx = 0;
-  let bestTime = lapTimes[0].time;
-  for (let i = 1; i < lapTimes.length; i++) {
-    if (lapTimes[i].time < bestTime) {
-      bestTime = lapTimes[i].time;
+  const excludedSet = new Set(excludedLaps ?? [0]);
+
+  let bestIdx = -1;
+  let bestTime = Infinity;
+  for (let i = 0; i < lapTimes.length; i++) {
+    const seg = lapTimes[i].segment_index ?? i;
+    if (excludedSet.has(seg)) continue;
+    const t = lapTimes[i].time;
+    if (t < bestTime) {
+      bestTime = t;
       bestIdx = i;
     }
   }
+  const analysisBest = bestIdx >= 0 ? bestTime : null;
 
   return (
     <table className="data-table data-table-sm lap-times-table">
       <thead>
         <tr>
+          {onToggleExcludeLap && <th className="lap-excl-col" title="Exclude from analysis">Excl</th>}
           <th>Lap</th>
           <th>Time</th>
           <th>Δ vs best</th>
@@ -68,36 +84,40 @@ export default function LapTimesModule({ lapTimes, fastIdx, onLapClick }: LapTim
       </thead>
       <tbody>
         {lapTimes.map((lt, i) => {
-          const delta = lt.time - bestTime;
-          const isBest = i === bestIdx || delta < 0.0005;
+          const segIdx = lt.segment_index ?? i;
+          const excluded = excludedSet.has(segIdx);
+          const delta = analysisBest != null ? lt.time - analysisBest : NaN;
+          const isBest = analysisBest != null && i === bestIdx && Math.abs(delta) < 0.0005;
           const dotColor = LAP_DOT_PALETTE[i % LAP_DOT_PALETTE.length];
           return (
             <tr
               key={lt.lap}
-              className={`${i === fastIdx ? 'row-fast ' : ''}${onLapClick ? 'lap-times-row-clickable' : ''}`}
+              className={`${i === fastIdx ? 'row-fast ' : ''}${excluded ? 'lap-row-excluded ' : ''}${onLapClick ? 'lap-times-row-clickable' : ''}`}
               onClick={onLapClick ? () => onLapClick(lt.lap) : undefined}
-              role={onLapClick ? 'button' : undefined}
-              tabIndex={onLapClick ? 0 : undefined}
-              onKeyDown={
-                onLapClick
-                  ? (e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        onLapClick(lt.lap);
-                      }
-                    }
-                  : undefined
-              }
             >
+              {onToggleExcludeLap && (
+                <td className="lap-excl-col" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={excluded}
+                    title="Exclude lap from virtual best / averages"
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => onToggleExcludeLap(segIdx)}
+                    aria-label={`Exclude lap ${lt.lap} from analysis`}
+                  />
+                </td>
+              )}
               <td>
                 <span className="lap-lap-cell">
                   <span className="lap-dot" style={{ backgroundColor: dotColor }} aria-hidden />
                   {lt.lap}
                 </span>
               </td>
-              <td>{fmtLapTime(lt.time)}</td>
-              <td className={deltaClass(delta, isBest)}>
-                {isBest ? '—' : formatDelta(delta)}
+              <td>
+                <span className={excluded ? 'lap-time-excluded' : undefined}>{fmtLapTime(lt.time)}</span>
+              </td>
+              <td className={deltaClass(delta, isBest && !excluded)}>
+                {excluded || isBest || !Number.isFinite(delta) ? '—' : formatDelta(delta)}
               </td>
             </tr>
           );

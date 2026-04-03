@@ -226,6 +226,9 @@ class TrackLayout:
     source_lap_index: int | None = None
     reference_lap_json: str = ""
     created_at: str = ""
+    source_driver: str | None = None
+    source_car: str | None = None
+    source_session_name: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -235,6 +238,9 @@ class TrackLayout:
             "source_session_id": self.source_session_id,
             "source_lap_index": self.source_lap_index,
             "created_at": self.created_at,
+            "source_driver": self.source_driver,
+            "source_car": self.source_car,
+            "source_session_name": self.source_session_name,
         }
 
     @classmethod
@@ -248,6 +254,9 @@ class TrackLayout:
             source_lap_index=int(lap) if lap is not None else None,
             reference_lap_json=str(d.get("reference_lap_json", "")),
             created_at=str(d.get("created_at", "")),
+            source_driver=d.get("source_driver"),
+            source_car=d.get("source_car"),
+            source_session_name=d.get("source_session_name"),
         )
 
 

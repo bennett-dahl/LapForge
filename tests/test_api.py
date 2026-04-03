@@ -253,6 +253,82 @@ class TestSessionAPI:
         assert got.ambient_temp_c == 25.0
         assert got.lap_count_notes == "Good grip"
 
+    def test_session_patch_excluded_laps_on_main_route(self, loaded_client):
+        client, store, _, session = loaded_client
+        resp = client.patch(
+            f"/api/sessions/{session.id}",
+            data=json.dumps({"excluded_laps": [0, 2]}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data.get("ok") is True
+        assert data.get("excluded_laps") == [0, 2]
+        pd = store.get_session(session.id).parsed_data
+        assert isinstance(pd, dict)
+        assert pd.get("excluded_laps") == [0, 2]
+
+    def test_session_patch_apply_reference_lap_index(self, loaded_client):
+        client, store, _, session = loaded_client
+        pd = session.parsed_data
+        if not isinstance(pd, dict) or not pd.get("lap_splits"):
+            pytest.skip("fixture session missing lap_splits")
+        resp = client.patch(
+            f"/api/sessions/{session.id}",
+            data=json.dumps({"apply_reference_lap_index": 0}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data.get("ok") is True
+        assert data.get("reference_lap_index") == 0
+        assert data.get("reference_lap") is not None
+        updated = store.get_session(session.id)
+        assert isinstance(updated.parsed_data, dict)
+        assert updated.parsed_data.get("map_lap_segment_index") == 0
+        assert updated.track_layout_id
+        layouts = store.list_track_layouts(session.track)
+        assert any(l.id == updated.track_layout_id for l in layouts)
+
+    def test_session_detail_dashboard_merges_track_layout_reference(self, loaded_client):
+        """When session blob has no usable reference_lap, use track layout geometry."""
+        from pathlib import Path
+
+        from LapForge.models import Session, SessionType
+        from LapForge.parsers.pi_toolbox_export import load_pi_toolbox_export
+        from LapForge.processing import process_session, sanitize_for_json
+
+        client, store, cd, _session = loaded_client
+        fixtures = Path(__file__).resolve().parent / "fixtures"
+        parsed = load_pi_toolbox_export(fixtures / "sample_export.txt")
+        proc = sanitize_for_json(process_session(parsed))
+        proc["reference_lap"] = {}
+        sid = "sess-merge-ref-layout"
+        s2 = Session(
+            id=sid,
+            car_driver_id=cd.id,
+            session_type=SessionType.PRACTICE_1,
+            track="MergeTrack",
+            driver="Test Driver",
+            car="911",
+            outing_number="1",
+            session_number="9",
+            target_pressure_psi=27.0,
+            parsed_data=proc,
+        )
+        store.add_session(s2)
+        ref = {
+            "lat": [36.0, 36.1],
+            "lon": [-115.0, -115.1],
+            "distance": [0.0, 50.0],
+            "lap_index": 0,
+        }
+        store.add_track_layout("L", "MergeTrack", ref)
+        resp = client.get(f"/api/sessions/{sid}/detail")
+        assert resp.status_code == 200
+        dd = resp.get_json().get("dashboard_data") or {}
+        assert len(dd.get("points") or []) >= 2
+
     def test_session_delete(self, loaded_client):
         client, store, _, session = loaded_client
         resp = client.delete(f"/api/sessions/{session.id}")

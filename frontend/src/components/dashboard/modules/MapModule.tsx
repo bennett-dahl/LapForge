@@ -5,9 +5,13 @@ interface MapModuleProps {
   sections?: { name: string; start_distance: number; end_distance: number }[];
   /** Lap boundary distances along the track (same units as point distances). */
   lapSplits?: number[];
+  /** Session-cumulative lap split distances (for cursor wrapping). */
+  lapSplitDistances?: number[];
+  /** Total track length for one lap (enables cursor wrapping across laps). */
+  lapLength?: number;
 }
 
-export default function MapModule({ points, sections = [], lapSplits }: MapModuleProps) {
+export default function MapModule({ points, sections = [], lapSplits, lapSplitDistances, lapLength }: MapModuleProps) {
   const sectionOverlays = sections.map((s) => ({
     name: s.name,
     start: s.start_distance,
@@ -15,6 +19,12 @@ export default function MapModule({ points, sections = [], lapSplits }: MapModul
   }));
 
   return (
-    <TrackMap points={points} sections={sectionOverlays} lapSplits={lapSplits} />
+    <TrackMap
+      points={points}
+      sections={sectionOverlays}
+      lapSplits={lapSplits}
+      lapSplitDistances={lapSplitDistances}
+      lapLength={lapLength}
+    />
   );
 }

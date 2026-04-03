@@ -252,6 +252,15 @@ class TestTrackLayoutCRUD:
         assert len(store.list_track_layouts()) == 2
         assert len(store.list_track_layouts("Track A")) == 1
 
+    def test_upsert_updates_source_metadata(self, store):
+        ref1 = {"lat": [1.0, 2.0], "lon": [1.0, 2.0], "lap_index": 0}
+        layout = store.add_track_layout("L", "T", ref1, source_session_id="old-s", source_lap_index=0)
+        ref2 = {"lat": [3.0, 4.0], "lon": [3.0, 4.0], "lap_index": 2}
+        store.upsert_track_layout("T", ref2, source_session_id="new-s", source_lap_index=2)
+        got = store.get_track_layout_by_id(layout.id)
+        assert got.source_lap_index == 2
+        assert got.source_session_id == "new-s"
+
     def test_delete_clears_session_reference(self, store):
         import uuid
         cd = store.add_car_driver("911", "Alice")

@@ -16,6 +16,10 @@ interface TrackMapProps {
   points: { lat: number; lng: number; distance?: number }[];
   sections?: { name: string; start: number; end: number; color?: string }[];
   lapSplits?: number[];
+  /** Lap split distances in session-cumulative space (for converting cursor distance to local). */
+  lapSplitDistances?: number[];
+  /** Total track length for one lap (enables cursor wrapping across laps). */
+  lapLength?: number;
   height?: number;
   onMapClick?: (distance: number) => void;
 }
@@ -140,7 +144,35 @@ function LapSplitMarkers({
   );
 }
 
-function CursorMarker({ points }: { points: TrackMapProps['points'] }) {
+/**
+ * Convert a session-cumulative distance to a local-within-lap distance
+ * so it maps onto the reference lap track (whose points use 0→lapLength).
+ */
+function sessionDistToLocal(
+  d: number,
+  lapSplitDistances: number[] | undefined,
+  lapLength: number | undefined,
+): number {
+  if (!lapLength || lapLength <= 0) return d;
+  if (lapSplitDistances && lapSplitDistances.length >= 2) {
+    for (let i = lapSplitDistances.length - 1; i >= 0; i--) {
+      if (d >= lapSplitDistances[i]) {
+        return (d - lapSplitDistances[i]) % lapLength;
+      }
+    }
+  }
+  return ((d % lapLength) + lapLength) % lapLength;
+}
+
+function CursorMarker({
+  points,
+  lapSplitDistances,
+  lapLength,
+}: {
+  points: TrackMapProps['points'];
+  lapSplitDistances?: number[];
+  lapLength?: number;
+}) {
   const { distance, mapDistance, setCursor } = useCursorSync();
   const map = useMap();
   const markerRef = useRef<L.Marker | null>(null);
@@ -148,7 +180,11 @@ function CursorMarker({ points }: { points: TrackMapProps['points'] }) {
 
   const rawDist = mapDistance ?? distance;
 
-  const trackLength = points.length > 1 ? (points[points.length - 1].distance ?? 0) : 0;
+  const firstAlong = points[0]?.distance ?? 0;
+  const lastAlong =
+    points.length > 1 ? (points[points.length - 1]?.distance ?? 0) : firstAlong;
+
+  const needsWrap = lapLength != null && lapLength > 0;
 
   useEffect(() => {
     if (rawDist == null) {
@@ -159,8 +195,16 @@ function CursorMarker({ points }: { points: TrackMapProps['points'] }) {
       return;
     }
 
-    // Wrap cumulative session distance into a single-lap track distance
-    const trackDist = trackLength > 0 ? rawDist % trackLength : rawDist;
+    let trackDist: number;
+    if (needsWrap) {
+      trackDist = sessionDistToLocal(rawDist, lapSplitDistances, lapLength);
+      trackDist = Math.min(Math.max(trackDist, firstAlong), lastAlong);
+    } else {
+      trackDist = rawDist;
+      if (points.length >= 2 && lastAlong > firstAlong) {
+        trackDist = Math.min(Math.max(rawDist, firstAlong), lastAlong);
+      }
+    }
 
     const pos = interpolatePosition(points, trackDist);
     if (!pos) {
@@ -191,7 +235,7 @@ function CursorMarker({ points }: { points: TrackMapProps['points'] }) {
         inner.style.transform = `rotate(${heading}deg)`;
       }
     }
-  }, [rawDist, trackLength, points, map]);
+  }, [rawDist, firstAlong, lastAlong, points, map, needsWrap, lapSplitDistances, lapLength]);
 
   useEffect(() => {
     return () => {
@@ -242,6 +286,8 @@ export default function TrackMap({
   points,
   sections = [],
   lapSplits,
+  lapSplitDistances,
+  lapLength,
   height,
 }: TrackMapProps) {
   const positions = useMemo<LatLngExpression[]>(
@@ -304,7 +350,7 @@ export default function TrackMap({
         {lapSplits != null && lapSplits.length > 0 && (
           <LapSplitMarkers points={points} lapSplits={lapSplits} />
         )}
-        <CursorMarker points={points} />
+        <CursorMarker points={points} lapSplitDistances={lapSplitDistances} lapLength={lapLength} />
       </MapContainer>
     </div>
   );

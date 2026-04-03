@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import type { TrackSection } from '../../types/models';
@@ -12,7 +12,7 @@ import {
   type ChartYAxisConfig,
 } from '../dashboard/modules/ChartModule';
 import ChannelPickerModal from '../dashboard/ChannelPickerModal';
-import { useCursorSync } from '../../contexts/CursorSyncContext';
+import { useCursorStore } from '../../contexts/CursorSyncContext';
 import Button from '../ui/Button';
 
 const CORNER_COLORS = [
@@ -119,20 +119,33 @@ export interface SectionEditorProps {
   defaultChannelKeys: string[];
   sections: TrackSection[];
   onSectionsChange?: (sections: TrackSection[]) => void;
+  /** Lap segment indices for track map GPS (from session time splits). */
+  referenceLapOptions?: { segmentIndex: number; label: string }[];
+  appliedReferenceIndex?: number | null;
+  onApplyReferenceLap?: (segmentIndex: number) => Promise<void>;
+  referenceLapApplyPending?: boolean;
 }
 
 export default function SectionEditor({
   sessionId, trackName, points, xValues, xLabel,
   defaultChannels, series, channelMeta, channelsByCategory, defaultChannelKeys,
   sections: initialSections, onSectionsChange,
+  referenceLapOptions = [],
+  appliedReferenceIndex = null,
+  onApplyReferenceLap,
+  referenceLapApplyPending = false,
 }: SectionEditorProps) {
   const qc = useQueryClient();
+  const [selectedRefLap, setSelectedRefLap] = useState(appliedReferenceIndex ?? 0);
+  useEffect(() => {
+    if (appliedReferenceIndex != null) setSelectedRefLap(appliedReferenceIndex);
+  }, [appliedReferenceIndex]);
   const [sections, setSections] = useState<TrackSection[]>(initialSections);
   const [activeIdx, setActiveIdx] = useState<number>(-1);
   const groupCounter = useRef(
     initialSections.reduce((max, s) => (s.corner_group != null && s.corner_group >= max ? s.corner_group + 1 : max), 0)
   );
-  const { distance: cursorDist } = useCursorSync();
+  const cursorStore = useCursorStore();
 
   // Channel & Y-Axis state — tracks whether user has customized channels/axes
   const [channelKeys, setChannelKeys] = useState<string[]>(defaultChannelKeys);
@@ -153,7 +166,7 @@ export default function SectionEditor({
 
   function splitSection(idx: number) {
     const sec = sections[idx];
-    let splitAt = cursorDist;
+    let splitAt: number | null = cursorStore.getSnapshot().distance;
     if (splitAt == null || splitAt <= sec.start_distance || splitAt >= sec.end_distance)
       splitAt = Math.round((sec.start_distance + sec.end_distance) / 2);
     const wasStraight = isStraight(sec);
@@ -337,6 +350,40 @@ export default function SectionEditor({
             <Button size="sm" onClick={() => saveMut.mutate()}>
               {saveMut.isPending ? 'Saving...' : 'Save'}
             </Button>
+            {referenceLapOptions.length > 0 && onApplyReferenceLap && (
+              <>
+                <label className="sec-ref-lap-field">
+                  <span className="sec-ref-lap-label">Map lap</span>
+                  <select
+                    className="sec-ref-lap-select"
+                    value={selectedRefLap}
+                    onChange={(e) => setSelectedRefLap(Number(e.target.value))}
+                  >
+                    {referenceLapOptions.map((o) => (
+                      <option key={o.segmentIndex} value={o.segmentIndex}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={
+                    referenceLapApplyPending
+                    || selectedRefLap === appliedReferenceIndex
+                  }
+                  onClick={() => onApplyReferenceLap(selectedRefLap)}
+                >
+                  {referenceLapApplyPending ? 'Applying…' : 'Apply map lap'}
+                </Button>
+                <span className="sec-ref-lap-applied">
+                  {appliedReferenceIndex != null
+                    ? `Current: Lap ${appliedReferenceIndex + 1}`
+                    : 'Current: Auto'}
+                </span>
+              </>
+            )}
           </div>
           <div className="sec-table-scroll">
             <table className="sec-table">
