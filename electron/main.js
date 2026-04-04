@@ -27,6 +27,12 @@ let userInitiatedCheck = false;
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
 
+// Beta builds track pre-releases and use the separate latest-beta.yml channel feed.
+if (IS_BETA) {
+  autoUpdater.allowPrerelease = true;
+  autoUpdater.channel = 'beta';
+}
+
 const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000; // re-check every 4 hours
 
 function log(msg) {
