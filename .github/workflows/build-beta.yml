@@ -56,7 +56,7 @@ jobs:
           $pkg.build.productName = "LapForge Beta"
           $pkg.build.nsis.shortcutName = "LapForge Beta"
           $pkg.build.publish[0].releaseType = "prerelease"
-          $pkg.build.publish[0].channel = "beta"
+          $pkg.build.publish[0] | Add-Member -NotePropertyName 'channel' -NotePropertyValue 'beta' -Force
           $pkg | ConvertTo-Json -Depth 10 | Set-Content electron/package.json
         shell: pwsh
 
