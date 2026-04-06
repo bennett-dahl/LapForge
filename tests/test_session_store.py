@@ -9,6 +9,7 @@ import pytest
 
 from LapForge.models import (
     CarDriver,
+    Plan,
     SavedComparison,
     Session,
     SessionType,
@@ -153,27 +154,124 @@ class TestSessionCRUD:
         assert got.track == "New"
         assert got.target_pressure_psi == 26.0
 
+    def test_planning_tag_and_bleed_events(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        s = self._make_session(store, cd.id,
+                               planning_tag="stabilization",
+                               bleed_events=[{"corner": "fl", "psi_removed": 0.5}])
+        got = store.get_session(s.id)
+        assert got.planning_tag == "stabilization"
+        assert len(got.bleed_events) == 1
+        assert got.bleed_events[0]["corner"] == "fl"
+
     def test_delete(self, store):
         cd = store.add_car_driver("911", "Alice")
         s = self._make_session(store, cd.id)
         store.delete_session(s.id)
         assert store.get_session(s.id) is None
 
+    def test_delete_cleans_plan_refs(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        s = self._make_session(store, cd.id)
+        p = store.add_plan(cd.id, w.id)
+        store.update_plan(p.id, session_ids=[s.id],
+                          checklist=[{"key": "stabilization", "session_ids": [s.id]}])
+        affected = store.delete_session(s.id)
+        assert len(affected) == 1
+        got = store.get_plan(p.id)
+        assert s.id not in got.session_ids
+        assert s.id not in got.checklist[0]["session_ids"]
+
 
 class TestWeekendCRUD:
     def test_add_and_get(self, store):
-        cd = store.add_car_driver("911", "Alice")
-        w = store.add_weekend(cd.id, "Spring 2024", session_ids=["s1", "s2"])
+        w = store.add_weekend("Spring 2024", track="Laguna Seca",
+                              date_start="2024-03-15", date_end="2024-03-17")
         got = store.get_weekend(w.id)
         assert got.name == "Spring 2024"
-        assert got.session_ids == ["s1", "s2"]
+        assert got.track == "Laguna Seca"
+        assert got.date_start == "2024-03-15"
 
     def test_list(self, store):
-        cd = store.add_car_driver("911", "Alice")
-        store.add_weekend(cd.id, "A")
-        store.add_weekend(cd.id, "B")
-        weekends = store.list_weekends(car_driver_id=cd.id)
+        store.add_weekend("A", date_start="2024-03-15")
+        store.add_weekend("B", date_start="2024-04-15")
+        weekends = store.list_weekends()
         assert len(weekends) == 2
+
+    def test_update(self, store):
+        w = store.add_weekend("Old", track="T1")
+        updated = store.update_weekend(w.id, name="New", track="T2")
+        assert updated.name == "New"
+        assert updated.track == "T2"
+
+    def test_delete_cascades_plans(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        store.add_plan(cd.id, w.id)
+        affected = store.delete_weekend(w.id)
+        assert len(affected) == 1
+        assert store.get_weekend(w.id) is None
+        assert len(store.list_plans(weekend_id=w.id)) == 0
+
+
+class TestPlanCRUD:
+    def test_add_and_get(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        p = store.add_plan(cd.id, w.id)
+        got = store.get_plan(p.id)
+        assert got is not None
+        assert got.car_driver_id == cd.id
+        assert got.weekend_id == w.id
+        assert got.planning_mode == "both"
+        assert len(got.checklist) == 7  # default checklist steps
+
+    def test_get_for_car_weekend(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        p = store.add_plan(cd.id, w.id)
+        got = store.get_plan_for_car_weekend(cd.id, w.id)
+        assert got is not None
+        assert got.id == p.id
+
+    def test_list_by_weekend(self, store):
+        cd1 = store.add_car_driver("911", "Alice")
+        cd2 = store.add_car_driver("718", "Bob")
+        w = store.add_weekend("Spring")
+        store.add_plan(cd1.id, w.id)
+        store.add_plan(cd2.id, w.id)
+        plans = store.list_plans(weekend_id=w.id)
+        assert len(plans) == 2
+
+    def test_update(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        p = store.add_plan(cd.id, w.id)
+        updated = store.update_plan(p.id,
+                                    planning_mode="qual",
+                                    session_ids=["s1", "s2"],
+                                    qual_plan={"fl": 24.5},
+                                    pressure_band_psi=0.3)
+        assert updated.planning_mode == "qual"
+        assert updated.session_ids == ["s1", "s2"]
+        assert updated.qual_plan["fl"] == 24.5
+        assert updated.pressure_band_psi == 0.3
+
+    def test_delete(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        p = store.add_plan(cd.id, w.id)
+        store.delete_plan(p.id)
+        assert store.get_plan(p.id) is None
+
+    def test_unique_constraint(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        store.add_plan(cd.id, w.id)
+        import sqlite3
+        with pytest.raises(sqlite3.IntegrityError):
+            store.add_plan(cd.id, w.id)
 
 
 class TestSavedComparisonCRUD:

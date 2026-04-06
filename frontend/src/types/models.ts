@@ -23,6 +23,17 @@ export interface TireSet {
   morning_pressure_rr: number | null;
 }
 
+export interface BleedEvent {
+  corner: string;
+  bleed_type: string;
+  psi_removed: number;
+  lap_number?: number | null;
+  tpms_before?: number | null;
+  tpms_after?: number | null;
+  notes?: string;
+  timestamp?: string;
+}
+
 export interface Session {
   id: string;
   car_driver_id: string;
@@ -42,15 +53,95 @@ export interface Session {
   target_pressure_psi: number | null;
   track_layout_id: string | null;
   lap_count_notes: string | null;
+  planning_tag: string | null;
+  bleed_events: BleedEvent[];
   file_path: string | null;
   parsed_data: Record<string, unknown> | null;
 }
 
 export interface Weekend {
   id: string;
-  car_driver_id: string;
   name: string;
+  track: string;
+  date_start: string;
+  date_end: string;
+  created_at: string;
+  plan_count?: number;
+}
+
+export interface CornerPressures {
+  fl: number | null;
+  fr: number | null;
+  rl: number | null;
+  rr: number | null;
+}
+
+export interface PlanPressures {
+  fl?: number | null;
+  fr?: number | null;
+  rl?: number | null;
+  rr?: number | null;
+  target?: number | null;
+  notes?: string;
+}
+
+export interface ChecklistStep {
+  key: string;
+  label: string;
+  required: boolean;
+  status: 'not_started' | 'linked' | 'reviewed';
   session_ids: string[];
+  notes: string;
+}
+
+export interface Plan {
+  id: string;
+  car_driver_id: string;
+  weekend_id: string;
+  session_ids: string[];
+  checklist: ChecklistStep[];
+  planning_mode: 'qual' | 'race' | 'both';
+  qual_plan: PlanPressures;
+  race_plan: PlanPressures;
+  qual_lap_range: [number, number];
+  race_stint_lap_range: [number, number | null];
+  pressure_band_psi: number;
+  current_ambient_temp_c: number | null;
+  current_track_temp_c: number | null;
+  created_at: string;
+}
+
+export interface WindowCornerStat {
+  avg: number | null;
+  min: number | null;
+  max: number | null;
+  lap_start_pressure: number | null;
+  pct_in_band: number | null;
+  delta_from_target: number | null;
+}
+
+export interface WindowStats {
+  fl?: WindowCornerStat;
+  fr?: WindowCornerStat;
+  rl?: WindowCornerStat;
+  rr?: WindowCornerStat;
+  _summary?: { avg_delta: number; pct_in_band: number };
+}
+
+export interface BoardSession {
+  id: string;
+  label: string;
+  session_type: string;
+  target_pressure_psi: number | null;
+  roll_out_psi: CornerPressures;
+  ambient_temp_c: number | null;
+  track_temp_c: number | null;
+  tire_summary: Record<string, unknown> | null;
+  bleed_events: BleedEvent[];
+  planning_tag: string | null;
+  tire_set_name: string | null;
+  qual_window_stats: WindowStats | null;
+  race_window_stats: WindowStats | null;
 }
 
 export interface TrackSection {

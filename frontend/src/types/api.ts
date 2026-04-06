@@ -9,6 +9,9 @@ import type {
   SessionListItem,
   UserInfo,
   Preferences,
+  Weekend,
+  Plan,
+  BoardSession,
 } from './models';
 
 // Generic wrappers
@@ -124,6 +127,31 @@ export interface DashboardTemplateCreateResponse {
 }
 export interface DashboardLayoutResponse {
   layout: DashboardModule[] | null;
+}
+
+// Weekends
+export type WeekendsResponse = Weekend[];
+export interface WeekendCreateResponse extends OkResponse {
+  id: string;
+  weekend: Weekend;
+}
+export interface WeekendUpdateResponse extends OkResponse {
+  weekend: Weekend;
+}
+
+// Plans
+export interface PlanCreateResponse extends OkResponse {
+  id: string;
+  plan: Plan;
+}
+export interface PlanUpdateResponse extends OkResponse {
+  plan: Plan;
+}
+export interface PlanBoardDataResponse {
+  plan: Plan;
+  weekend: Weekend | null;
+  car_driver: CarDriver | null;
+  sessions: BoardSession[];
 }
 
 // Sync

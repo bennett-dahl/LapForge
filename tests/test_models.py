@@ -2,6 +2,7 @@
 
 from LapForge.models import (
     CarDriver,
+    Plan,
     SavedComparison,
     Session,
     SessionType,
@@ -88,19 +89,71 @@ class TestSession:
         assert s.session_type is SessionType.PRACTICE_1
         assert s.track == ""
         assert s.parsed_data is None
+        assert s.planning_tag is None
+        assert s.bleed_events == []
+
+    def test_bleed_events_round_trip(self):
+        s = Session(
+            id="s3", car_driver_id="cd1", session_type=SessionType.PRACTICE_1,
+            track="T", driver="D", car="C", outing_number="1", session_number="1",
+            bleed_events=[{"corner": "fl", "psi_removed": 0.5, "bleed_type": "hot"}],
+            planning_tag="stabilization",
+        )
+        d = s.to_dict()
+        assert d["planning_tag"] == "stabilization"
+        assert len(d["bleed_events"]) == 1
+        s2 = Session.from_dict(d)
+        assert s2.planning_tag == "stabilization"
+        assert s2.bleed_events[0]["corner"] == "fl"
 
 
 class TestWeekend:
     def test_round_trip(self):
-        w = Weekend(id="w1", car_driver_id="cd1", name="Spring 2024",
-                    session_ids=["s1", "s2"])
+        w = Weekend(id="w1", name="Spring 2024", track="Laguna Seca",
+                    date_start="2024-03-15", date_end="2024-03-17")
         d = w.to_dict()
         w2 = Weekend.from_dict(d)
-        assert w2.session_ids == ["s1", "s2"]
+        assert w2.name == "Spring 2024"
+        assert w2.track == "Laguna Seca"
+        assert w2.date_start == "2024-03-15"
 
-    def test_empty_sessions(self):
-        w = Weekend.from_dict({"id": "w2", "car_driver_id": "cd1", "name": "Empty"})
-        assert w.session_ids == []
+    def test_defaults(self):
+        w = Weekend.from_dict({"id": "w2", "name": "Empty"})
+        assert w.track == ""
+        assert w.date_start == ""
+
+
+class TestPlan:
+    def test_round_trip(self):
+        p = Plan(id="p1", car_driver_id="cd1", weekend_id="w1",
+                 session_ids=["s1", "s2"], planning_mode="qual",
+                 qual_plan={"fl": 24.5, "fr": 24.5, "rl": 22.0, "rr": 22.0, "target": 30},
+                 pressure_band_psi=0.3)
+        d = p.to_dict()
+        p2 = Plan.from_dict(d)
+        assert p2.session_ids == ["s1", "s2"]
+        assert p2.planning_mode == "qual"
+        assert p2.qual_plan["fl"] == 24.5
+        assert p2.pressure_band_psi == 0.3
+        assert p2.qual_lap_range == [2, 3]
+
+    def test_defaults(self):
+        p = Plan.from_dict({"id": "p2", "car_driver_id": "cd1", "weekend_id": "w1"})
+        assert p.planning_mode == "both"
+        assert p.session_ids == []
+        assert p.checklist == []
+        assert p.pressure_band_psi == 0.5
+        assert p.current_ambient_temp_c is None
+
+    def test_json_string_parsing(self):
+        import json
+        p = Plan.from_dict({
+            "id": "p3", "car_driver_id": "cd1", "weekend_id": "w1",
+            "session_ids": json.dumps(["s1"]),
+            "qual_plan": json.dumps({"fl": 20}),
+        })
+        assert p.session_ids == ["s1"]
+        assert p.qual_plan["fl"] == 20
 
 
 class TestTrackSection:

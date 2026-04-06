@@ -11,7 +11,18 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .models import CarDriver, SavedComparison, Session, SessionType, TireSet, TrackLayout, TrackSection, Weekend
+from .models import (
+    DEFAULT_CHECKLIST_STEPS,
+    CarDriver,
+    Plan,
+    SavedComparison,
+    Session,
+    SessionType,
+    TireSet,
+    TrackLayout,
+    TrackSection,
+    Weekend,
+)
 
 log = logging.getLogger(__name__)
 
@@ -108,10 +119,30 @@ class SessionStore:
                 );
                 CREATE TABLE IF NOT EXISTS weekends (
                     id TEXT PRIMARY KEY,
-                    car_driver_id TEXT NOT NULL,
                     name TEXT NOT NULL,
-                    session_ids_json TEXT NOT NULL,
-                    FOREIGN KEY (car_driver_id) REFERENCES car_drivers(id)
+                    track TEXT DEFAULT '',
+                    date_start TEXT DEFAULT '',
+                    date_end TEXT DEFAULT '',
+                    created_at TEXT DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS plans (
+                    id TEXT PRIMARY KEY,
+                    car_driver_id TEXT NOT NULL,
+                    weekend_id TEXT NOT NULL,
+                    session_ids_json TEXT DEFAULT '[]',
+                    checklist_json TEXT DEFAULT '[]',
+                    planning_mode TEXT DEFAULT 'both',
+                    qual_plan_json TEXT DEFAULT '{}',
+                    race_plan_json TEXT DEFAULT '{}',
+                    qual_lap_range_json TEXT DEFAULT '[2,3]',
+                    race_stint_lap_range_json TEXT DEFAULT '[3,null]',
+                    pressure_band_psi REAL DEFAULT 0.5,
+                    current_ambient_temp_c REAL,
+                    current_track_temp_c REAL,
+                    created_at TEXT DEFAULT '',
+                    FOREIGN KEY (car_driver_id) REFERENCES car_drivers(id),
+                    FOREIGN KEY (weekend_id) REFERENCES weekends(id),
+                    UNIQUE(car_driver_id, weekend_id)
                 );
                 CREATE TABLE IF NOT EXISTS saved_comparisons (
                     id TEXT PRIMARY KEY,
@@ -162,6 +193,72 @@ class SessionStore:
 
             if "dashboard_layout_json" not in cols:
                 c.execute("ALTER TABLE sessions ADD COLUMN dashboard_layout_json TEXT")
+
+            if "planning_tag" not in cols:
+                c.execute("ALTER TABLE sessions ADD COLUMN planning_tag TEXT")
+            if "bleed_events_json" not in cols:
+                c.execute("ALTER TABLE sessions ADD COLUMN bleed_events_json TEXT")
+
+            # Migrate old weekends schema (had car_driver_id + session_ids_json) to event-level
+            wk_cols = {
+                row[1]
+                for row in c.execute("PRAGMA table_info(weekends)").fetchall()
+            }
+            if "car_driver_id" in wk_cols:
+                old_rows = c.execute(
+                    "SELECT id, car_driver_id, name, session_ids_json FROM weekends"
+                ).fetchall()
+                c.execute("DROP TABLE weekends")
+                c.execute("""
+                    CREATE TABLE weekends (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        track TEXT DEFAULT '',
+                        date_start TEXT DEFAULT '',
+                        date_end TEXT DEFAULT '',
+                        created_at TEXT DEFAULT ''
+                    )
+                """)
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS plans (
+                        id TEXT PRIMARY KEY,
+                        car_driver_id TEXT NOT NULL,
+                        weekend_id TEXT NOT NULL,
+                        session_ids_json TEXT DEFAULT '[]',
+                        checklist_json TEXT DEFAULT '[]',
+                        planning_mode TEXT DEFAULT 'both',
+                        qual_plan_json TEXT DEFAULT '{}',
+                        race_plan_json TEXT DEFAULT '{}',
+                        qual_lap_range_json TEXT DEFAULT '[2,3]',
+                        race_stint_lap_range_json TEXT DEFAULT '[3,null]',
+                        pressure_band_psi REAL DEFAULT 0.5,
+                        current_ambient_temp_c REAL,
+                        current_track_temp_c REAL,
+                        created_at TEXT DEFAULT '',
+                        FOREIGN KEY (car_driver_id) REFERENCES car_drivers(id),
+                        FOREIGN KEY (weekend_id) REFERENCES weekends(id),
+                        UNIQUE(car_driver_id, weekend_id)
+                    )
+                """)
+                now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                migrated_names: dict[str, str] = {}
+                for wid, cdid, wname, sids_json in old_rows:
+                    if wname not in migrated_names:
+                        migrated_names[wname] = wid
+                        c.execute(
+                            "INSERT INTO weekends (id, name, created_at) VALUES (?, ?, ?)",
+                            (wid, wname, now),
+                        )
+                    weekend_id = migrated_names[wname]
+                    sids = json.loads(sids_json or "[]")
+                    plan_id = str(uuid.uuid4())
+                    c.execute(
+                        """INSERT OR IGNORE INTO plans
+                           (id, car_driver_id, weekend_id, session_ids_json, checklist_json, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (plan_id, cdid, weekend_id, json.dumps(sids),
+                         json.dumps(DEFAULT_CHECKLIST_STEPS), now),
+                    )
 
             sc_cols = {
                 row[1]
@@ -323,12 +420,14 @@ class SessionStore:
     def add_session(self, session: Session) -> Session:
         parsed_json = json.dumps(session.parsed_data, default=str) if session.parsed_data else None
         summary_json = self._extract_summary_json(session.parsed_data)
+        bleed_json = json.dumps(session.bleed_events) if session.bleed_events else None
         with self._conn() as c:
             c.execute(
                 """INSERT INTO sessions (id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                    ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
-                   target_pressure_psi, track_layout_id, lap_count_notes, file_path, parsed_data_json, session_summary_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
+                   file_path, parsed_data_json, session_summary_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session.id,
                     session.car_driver_id,
@@ -348,6 +447,8 @@ class SessionStore:
                     session.target_pressure_psi,
                     session.track_layout_id,
                     session.lap_count_notes,
+                    session.planning_tag,
+                    bleed_json,
                     session.file_path,
                     parsed_json,
                     summary_json,
@@ -358,11 +459,13 @@ class SessionStore:
     def update_session(self, session: Session) -> None:
         parsed_json = json.dumps(session.parsed_data, default=str) if session.parsed_data else None
         summary_json = self._extract_summary_json(session.parsed_data)
+        bleed_json = json.dumps(session.bleed_events) if session.bleed_events else None
         with self._conn() as c:
             c.execute(
                 """UPDATE sessions SET car_driver_id = ?, session_type = ?, track = ?, driver = ?, car = ?, outing_number = ?, session_number = ?,
                    ambient_temp_c = ?, track_temp_c = ?, tire_set_id = ?, roll_out_pressure_fl = ?, roll_out_pressure_fr = ?, roll_out_pressure_rl = ?, roll_out_pressure_rr = ?,
-                   target_pressure_psi = ?, track_layout_id = ?, lap_count_notes = ?, file_path = ?, parsed_data_json = ?, session_summary_json = ? WHERE id = ?""",
+                   target_pressure_psi = ?, track_layout_id = ?, lap_count_notes = ?, planning_tag = ?, bleed_events_json = ?,
+                   file_path = ?, parsed_data_json = ?, session_summary_json = ? WHERE id = ?""",
                 (
                     session.car_driver_id,
                     session.session_type.value,
@@ -381,6 +484,8 @@ class SessionStore:
                     session.target_pressure_psi,
                     session.track_layout_id,
                     session.lap_count_notes,
+                    session.planning_tag,
+                    bleed_json,
                     session.file_path,
                     parsed_json,
                     summary_json,
@@ -393,17 +498,24 @@ class SessionStore:
             row = c.execute(
                 """SELECT id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                    ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
-                   target_pressure_psi, track_layout_id, lap_count_notes, file_path, parsed_data_json FROM sessions WHERE id = ?""",
+                   target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
+                   file_path, parsed_data_json FROM sessions WHERE id = ?""",
                 (id,),
             ).fetchone()
         if not row:
             return None
         parsed = None
-        if row[19]:
+        if row[21]:
             try:
-                parsed = json.loads(row[19])
+                parsed = json.loads(row[21])
             except (ValueError, TypeError):
                 parsed = None
+        bleed_events: list[dict] = []
+        if row[19]:
+            try:
+                bleed_events = json.loads(row[19])
+            except (ValueError, TypeError):
+                bleed_events = []
         return Session(
             id=row[0],
             car_driver_id=row[1],
@@ -423,7 +535,9 @@ class SessionStore:
             target_pressure_psi=row[15],
             track_layout_id=row[16],
             lap_count_notes=row[17],
-            file_path=row[18],
+            planning_tag=row[18],
+            bleed_events=bleed_events,
+            file_path=row[20],
             parsed_data=parsed,
         )
 
@@ -434,23 +548,31 @@ class SessionStore:
                 rows = c.execute(
                     """SELECT id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                        ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
-                       target_pressure_psi, track_layout_id, lap_count_notes, file_path, session_summary_json FROM sessions WHERE car_driver_id = ? ORDER BY track, session_type""",
+                       target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
+                       file_path, session_summary_json FROM sessions WHERE car_driver_id = ? ORDER BY track, session_type""",
                     (car_driver_id,),
                 ).fetchall()
             else:
                 rows = c.execute(
                     """SELECT id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                        ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
-                       target_pressure_psi, track_layout_id, lap_count_notes, file_path, session_summary_json FROM sessions ORDER BY car_driver_id, track, session_type"""
+                       target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
+                       file_path, session_summary_json FROM sessions ORDER BY car_driver_id, track, session_type"""
                 ).fetchall()
         out = []
         for row in rows:
             summary = None
-            if row[19]:
+            if row[21]:
                 try:
-                    summary = json.loads(row[19])
+                    summary = json.loads(row[21])
                 except (ValueError, TypeError):
                     summary = None
+            bleed_events: list[dict] = []
+            if row[19]:
+                try:
+                    bleed_events = json.loads(row[19])
+                except (ValueError, TypeError):
+                    bleed_events = []
             out.append(
                 Session(
                     id=row[0],
@@ -471,41 +593,223 @@ class SessionStore:
                     target_pressure_psi=row[15],
                     track_layout_id=row[16],
                     lap_count_notes=row[17],
-                    file_path=row[18],
+                    planning_tag=row[18],
+                    bleed_events=bleed_events,
+                    file_path=row[20],
                     parsed_data={"summary": summary} if summary else None,
                 )
             )
         return out
 
-    def delete_session(self, id: str) -> None:
+    def delete_session(self, id: str) -> list[dict[str, str]]:
+        """Delete session and clean up plan references. Returns affected plan ids."""
+        affected: list[dict[str, str]] = []
         with self._conn() as c:
+            plan_rows = c.execute(
+                "SELECT id, session_ids_json, checklist_json FROM plans"
+            ).fetchall()
+            for pid, sids_json, cl_json in plan_rows:
+                sids = json.loads(sids_json or "[]")
+                checklist = json.loads(cl_json or "[]")
+                changed = False
+                if id in sids:
+                    sids.remove(id)
+                    changed = True
+                for step in checklist:
+                    step_sids = step.get("session_ids", [])
+                    if id in step_sids:
+                        step_sids.remove(id)
+                        changed = True
+                if changed:
+                    c.execute(
+                        "UPDATE plans SET session_ids_json = ?, checklist_json = ? WHERE id = ?",
+                        (json.dumps(sids), json.dumps(checklist), pid),
+                    )
+                    affected.append({"id": pid})
             c.execute("DELETE FROM sessions WHERE id = ?", (id,))
+        return affected
 
     # ---------- Weekend ----------
-    def add_weekend(self, car_driver_id: str, name: str, session_ids: list[str] | None = None, id: str | None = None) -> Weekend:
+    def add_weekend(self, name: str, track: str = "", date_start: str = "",
+                    date_end: str = "", id: str | None = None) -> Weekend:
         id = id or str(uuid.uuid4())
-        w = Weekend(id=id, car_driver_id=car_driver_id, name=name, session_ids=session_ids or [])
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        w = Weekend(id=id, name=name, track=track, date_start=date_start,
+                    date_end=date_end, created_at=now)
         with self._conn() as c:
             c.execute(
-                "INSERT INTO weekends (id, car_driver_id, name, session_ids_json) VALUES (?, ?, ?, ?)",
-                (w.id, w.car_driver_id, w.name, json.dumps(w.session_ids)),
+                "INSERT INTO weekends (id, name, track, date_start, date_end, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (w.id, w.name, w.track, w.date_start, w.date_end, w.created_at),
             )
         return w
 
     def get_weekend(self, id: str) -> Weekend | None:
         with self._conn() as c:
-            row = c.execute("SELECT id, car_driver_id, name, session_ids_json FROM weekends WHERE id = ?", (id,)).fetchone()
+            row = c.execute(
+                "SELECT id, name, track, date_start, date_end, created_at FROM weekends WHERE id = ?",
+                (id,),
+            ).fetchone()
         if not row:
             return None
-        return Weekend(id=row[0], car_driver_id=row[1], name=row[2], session_ids=json.loads(row[3] or "[]"))
+        return Weekend(id=row[0], name=row[1], track=row[2] or "", date_start=row[3] or "",
+                       date_end=row[4] or "", created_at=row[5] or "")
 
-    def list_weekends(self, car_driver_id: str | None = None) -> list[Weekend]:
+    def update_weekend(self, weekend_id: str, **kwargs: Any) -> Weekend | None:
+        existing = self.get_weekend(weekend_id)
+        if not existing:
+            return None
+        allowed = {"name", "track", "date_start", "date_end"}
+        sets: list[str] = []
+        vals: list[Any] = []
+        for k, v in kwargs.items():
+            if k in allowed and v is not None:
+                sets.append(f"{k} = ?")
+                vals.append(v)
+        if sets:
+            vals.append(weekend_id)
+            with self._conn() as c:
+                c.execute(f"UPDATE weekends SET {', '.join(sets)} WHERE id = ?", vals)
+        return self.get_weekend(weekend_id)
+
+    def list_weekends(self) -> list[Weekend]:
         with self._conn() as c:
-            if car_driver_id:
-                rows = c.execute("SELECT id, car_driver_id, name, session_ids_json FROM weekends WHERE car_driver_id = ? ORDER BY name", (car_driver_id,)).fetchall()
+            rows = c.execute(
+                "SELECT id, name, track, date_start, date_end, created_at FROM weekends ORDER BY date_start DESC, name"
+            ).fetchall()
+        return [Weekend(id=r[0], name=r[1], track=r[2] or "", date_start=r[3] or "",
+                        date_end=r[4] or "", created_at=r[5] or "") for r in rows]
+
+    def delete_weekend(self, id: str) -> list[dict[str, str]]:
+        """Delete weekend and cascade-delete its plans. Returns affected plans."""
+        affected: list[dict[str, str]] = []
+        with self._conn() as c:
+            rows = c.execute("SELECT id FROM plans WHERE weekend_id = ?", (id,)).fetchall()
+            for r in rows:
+                affected.append({"id": r[0]})
+            c.execute("DELETE FROM plans WHERE weekend_id = ?", (id,))
+            c.execute("DELETE FROM weekends WHERE id = ?", (id,))
+        return affected
+
+    # ---------- Plan ----------
+    def add_plan(self, car_driver_id: str, weekend_id: str, id: str | None = None) -> Plan:
+        import copy
+        id = id or str(uuid.uuid4())
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        checklist = copy.deepcopy(DEFAULT_CHECKLIST_STEPS)
+        p = Plan(id=id, car_driver_id=car_driver_id, weekend_id=weekend_id,
+                 checklist=checklist, created_at=now)
+        with self._conn() as c:
+            c.execute(
+                """INSERT INTO plans (id, car_driver_id, weekend_id, session_ids_json,
+                   checklist_json, planning_mode, qual_plan_json, race_plan_json,
+                   qual_lap_range_json, race_stint_lap_range_json, pressure_band_psi,
+                   current_ambient_temp_c, current_track_temp_c, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (p.id, p.car_driver_id, p.weekend_id, json.dumps(p.session_ids),
+                 json.dumps(p.checklist), p.planning_mode, json.dumps(p.qual_plan),
+                 json.dumps(p.race_plan), json.dumps(p.qual_lap_range),
+                 json.dumps(p.race_stint_lap_range), p.pressure_band_psi,
+                 p.current_ambient_temp_c, p.current_track_temp_c, p.created_at),
+            )
+        return p
+
+    def get_plan(self, plan_id: str) -> Plan | None:
+        with self._conn() as c:
+            row = c.execute(
+                """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
+                   planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
+                   race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
+                   current_track_temp_c, created_at FROM plans WHERE id = ?""",
+                (plan_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._plan_from_row(row)
+
+    def get_plan_for_car_weekend(self, car_driver_id: str, weekend_id: str) -> Plan | None:
+        with self._conn() as c:
+            row = c.execute(
+                """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
+                   planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
+                   race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
+                   current_track_temp_c, created_at FROM plans
+                   WHERE car_driver_id = ? AND weekend_id = ?""",
+                (car_driver_id, weekend_id),
+            ).fetchone()
+        if not row:
+            return None
+        return self._plan_from_row(row)
+
+    def list_plans(self, weekend_id: str | None = None) -> list[Plan]:
+        with self._conn() as c:
+            if weekend_id:
+                rows = c.execute(
+                    """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
+                       planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
+                       race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
+                       current_track_temp_c, created_at FROM plans WHERE weekend_id = ? ORDER BY created_at""",
+                    (weekend_id,),
+                ).fetchall()
             else:
-                rows = c.execute("SELECT id, car_driver_id, name, session_ids_json FROM weekends ORDER BY name").fetchall()
-        return [Weekend(id=r[0], car_driver_id=r[1], name=r[2], session_ids=json.loads(r[3] or "[]")) for r in rows]
+                rows = c.execute(
+                    """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
+                       planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
+                       race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
+                       current_track_temp_c, created_at FROM plans ORDER BY created_at"""
+                ).fetchall()
+        return [self._plan_from_row(r) for r in rows]
+
+    def update_plan(self, plan_id: str, **kwargs: Any) -> Plan | None:
+        existing = self.get_plan(plan_id)
+        if not existing:
+            return None
+        json_fields = {
+            "session_ids": "session_ids_json",
+            "checklist": "checklist_json",
+            "qual_plan": "qual_plan_json",
+            "race_plan": "race_plan_json",
+            "qual_lap_range": "qual_lap_range_json",
+            "race_stint_lap_range": "race_stint_lap_range_json",
+        }
+        scalar_fields = {"planning_mode", "pressure_band_psi",
+                         "current_ambient_temp_c", "current_track_temp_c"}
+        sets: list[str] = []
+        vals: list[Any] = []
+        for k, v in kwargs.items():
+            if k in json_fields:
+                sets.append(f"{json_fields[k]} = ?")
+                vals.append(json.dumps(v) if not isinstance(v, str) else v)
+            elif k in scalar_fields:
+                sets.append(f"{k} = ?")
+                vals.append(v)
+        if sets:
+            vals.append(plan_id)
+            with self._conn() as c:
+                c.execute(f"UPDATE plans SET {', '.join(sets)} WHERE id = ?", vals)
+        return self.get_plan(plan_id)
+
+    def delete_plan(self, plan_id: str) -> None:
+        with self._conn() as c:
+            c.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+
+    @staticmethod
+    def _plan_from_row(row: tuple) -> Plan:
+        return Plan(
+            id=row[0],
+            car_driver_id=row[1],
+            weekend_id=row[2],
+            session_ids=json.loads(row[3] or "[]"),
+            checklist=json.loads(row[4] or "[]"),
+            planning_mode=row[5] or "both",
+            qual_plan=json.loads(row[6] or "{}"),
+            race_plan=json.loads(row[7] or "{}"),
+            qual_lap_range=json.loads(row[8] or "[2,3]"),
+            race_stint_lap_range=json.loads(row[9] or "[3,null]"),
+            pressure_band_psi=row[10] if row[10] is not None else 0.5,
+            current_ambient_temp_c=row[11],
+            current_track_temp_c=row[12],
+            created_at=row[13] or "",
+        )
 
     # ---------- Saved comparison (Compare view bookmarks) ----------
     def add_saved_comparison(self, name: str, session_ids: list[str], id: str | None = None) -> SavedComparison:

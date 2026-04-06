@@ -47,6 +47,7 @@ from LapForge.processing import (
     extract_reference_lap_from_session_blob,
     needs_reprocess as check_needs_reprocess,
     patch_pressure_summaries,
+    pressure_window_stats,
     process_session,
     process_session_incremental,
     process_session_streaming,
@@ -121,6 +122,10 @@ def create_app() -> Flask:
     # ---- Utility helpers ----
 
     PSI_TO_BAR = 1 / BAR_TO_PSI
+    _PRESSURE_KEYS_LOWER = {
+        "tpms_press_fl", "tpms_press_fr", "tpms_press_rl", "tpms_press_rr",
+        "tpms_press_fl_psi", "tpms_press_fr_psi", "tpms_press_rl_psi", "tpms_press_rr_psi",
+    }
 
     def _safe_float(val: str | None) -> float | None:
         if not val or not str(val).strip():
@@ -1550,6 +1555,185 @@ def create_app() -> Flask:
         store.delete_car_driver(cd_id)
         return jsonify({"ok": True})
 
+    # ---------- Weekends ----------
+
+    @app.route("/api/weekends")
+    def api_weekends_list():
+        weekends = store.list_weekends()
+        result = []
+        for w in weekends:
+            plans = store.list_plans(weekend_id=w.id)
+            result.append({**w.to_dict(), "plan_count": len(plans)})
+        return jsonify(result)
+
+    @app.route("/api/weekends", methods=["POST"])
+    def api_weekends_create():
+        data = request.get_json(silent=True) or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name required"}), 400
+        w = store.add_weekend(
+            name=name,
+            track=(data.get("track") or "").strip(),
+            date_start=(data.get("date_start") or "").strip(),
+            date_end=(data.get("date_end") or "").strip(),
+        )
+        return jsonify({"ok": True, "id": w.id, "weekend": w.to_dict()})
+
+    @app.route("/api/weekends/<wid>", methods=["PATCH"])
+    def api_weekends_update(wid: str):
+        w = store.get_weekend(wid)
+        if not w:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        updated = store.update_weekend(wid, **{k: v for k, v in data.items()
+                                               if k in ("name", "track", "date_start", "date_end")})
+        return jsonify({"ok": True, "weekend": updated.to_dict() if updated else w.to_dict()})
+
+    @app.route("/api/weekends/<wid>", methods=["DELETE"])
+    def api_weekends_delete(wid: str):
+        w = store.get_weekend(wid)
+        if not w:
+            return jsonify({"error": "Not found"}), 404
+        affected = store.delete_weekend(wid)
+        return jsonify({"ok": True, "affected_plans": affected})
+
+    @app.route("/api/weekends/<wid>/plans")
+    def api_weekend_plans_list(wid: str):
+        plans = store.list_plans(weekend_id=wid)
+        car_drivers = {cd.id: cd for cd in store.list_car_drivers()}
+        result = []
+        for p in plans:
+            d = p.to_dict()
+            cd = car_drivers.get(p.car_driver_id)
+            d["car_driver_display"] = cd.display_name() if cd else p.car_driver_id
+            result.append(d)
+        return jsonify(result)
+
+    # ---------- Plans ----------
+
+    @app.route("/api/plans", methods=["POST"])
+    def api_plans_create():
+        data = request.get_json(silent=True) or {}
+        car_driver_id = (data.get("car_driver_id") or "").strip()
+        weekend_id = (data.get("weekend_id") or "").strip()
+        if not car_driver_id or not weekend_id:
+            return jsonify({"error": "car_driver_id and weekend_id required"}), 400
+        existing = store.get_plan_for_car_weekend(car_driver_id, weekend_id)
+        if existing:
+            return jsonify({"error": "Plan already exists for this car/weekend", "id": existing.id}), 409
+        p = store.add_plan(car_driver_id=car_driver_id, weekend_id=weekend_id)
+        return jsonify({"ok": True, "id": p.id, "plan": p.to_dict()})
+
+    @app.route("/api/plans/<plan_id>")
+    def api_plans_get(plan_id: str):
+        p = store.get_plan(plan_id)
+        if not p:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(p.to_dict())
+
+    @app.route("/api/plans/<plan_id>", methods=["PATCH"])
+    def api_plans_update(plan_id: str):
+        p = store.get_plan(plan_id)
+        if not p:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        allowed = {
+            "checklist", "planning_mode", "qual_plan", "race_plan",
+            "qual_lap_range", "race_stint_lap_range", "pressure_band_psi",
+            "session_ids", "current_ambient_temp_c", "current_track_temp_c",
+        }
+        kwargs = {k: v for k, v in data.items() if k in allowed}
+        updated = store.update_plan(plan_id, **kwargs)
+        return jsonify({"ok": True, "plan": updated.to_dict() if updated else p.to_dict()})
+
+    @app.route("/api/plans/<plan_id>", methods=["DELETE"])
+    def api_plans_delete(plan_id: str):
+        p = store.get_plan(plan_id)
+        if not p:
+            return jsonify({"error": "Not found"}), 404
+        store.delete_plan(plan_id)
+        return jsonify({"ok": True})
+
+    @app.route("/api/plans/<plan_id>/board-data")
+    def api_plans_board_data(plan_id: str):
+        """Lightweight plan board data: plan settings + per-session metadata/summary (no telemetry)."""
+        plan = store.get_plan(plan_id)
+        if not plan:
+            return jsonify({"error": "Not found"}), 404
+        weekend = store.get_weekend(plan.weekend_id)
+        car_driver = store.get_car_driver(plan.car_driver_id)
+        sessions_out: list[dict[str, Any]] = []
+        for sid in plan.session_ids:
+            sess = store.get_session(sid)
+            if not sess:
+                continue
+            summary_blob = (sess.parsed_data or {}).get("summary") if sess.parsed_data else None
+            tire_summary = None
+            if summary_blob and isinstance(summary_blob, dict):
+                tire_summary = summary_blob.get("pressure_summary_psi")
+            tire_set = store.get_tire_set(sess.tire_set_id) if sess.tire_set_id else None
+            sess_cd = store.get_car_driver(sess.car_driver_id)
+            label = f"{sess.track} — {sess.session_type.value}"
+            if sess_cd:
+                label += f" ({sess_cd.display_name()})"
+            ro_fl = round(sess.roll_out_pressure_fl * BAR_TO_PSI, 2) if sess.roll_out_pressure_fl else None
+            ro_fr = round(sess.roll_out_pressure_fr * BAR_TO_PSI, 2) if sess.roll_out_pressure_fr else None
+            ro_rl = round(sess.roll_out_pressure_rl * BAR_TO_PSI, 2) if sess.roll_out_pressure_rl else None
+            ro_rr = round(sess.roll_out_pressure_rr * BAR_TO_PSI, 2) if sess.roll_out_pressure_rr else None
+            qual_window_stats = None
+            race_window_stats = None
+            pd = sess.parsed_data
+            if pd and isinstance(pd, dict):
+                full_times = pd.get("times") or []
+                full_series = pd.get("series") or {}
+                lap_splits = pd.get("lap_splits") or []
+                pcols = [k for k in full_series if k.lower() in _PRESSURE_KEYS_LOWER]
+                eff_target = _session_target_psi(sess)
+                ql = plan.qual_lap_range or [2, 3]
+                rl = plan.race_stint_lap_range or [3, None]
+                if pcols and full_times:
+                    qual_window_stats = pressure_window_stats(
+                        full_times, full_series, pcols, lap_splits,
+                        target_psi=eff_target, lap_start=ql[0], lap_end=ql[1],
+                    )
+                    race_window_stats = pressure_window_stats(
+                        full_times, full_series, pcols, lap_splits,
+                        target_psi=eff_target, lap_start=rl[0], lap_end=rl[1],
+                    )
+            sessions_out.append({
+                "id": sess.id,
+                "label": label,
+                "session_type": sess.session_type.value,
+                "target_pressure_psi": sess.target_pressure_psi,
+                "roll_out_psi": {"fl": ro_fl, "fr": ro_fr, "rl": ro_rl, "rr": ro_rr},
+                "ambient_temp_c": sess.ambient_temp_c,
+                "track_temp_c": sess.track_temp_c,
+                "tire_summary": tire_summary,
+                "bleed_events": sess.bleed_events,
+                "planning_tag": sess.planning_tag,
+                "tire_set_name": tire_set.name if tire_set else None,
+                "qual_window_stats": qual_window_stats,
+                "race_window_stats": race_window_stats,
+            })
+        return jsonify({
+            "plan": plan.to_dict(),
+            "weekend": weekend.to_dict() if weekend else None,
+            "car_driver": car_driver.to_dict() if car_driver else None,
+            "sessions": sessions_out,
+        })
+
+    @app.route("/api/sessions/<sid>/telemetry")
+    def api_session_telemetry(sid: str):
+        """Per-session telemetry for lazy-loaded charts."""
+        sess = store.get_session(sid)
+        if not sess:
+            return jsonify({"error": "Not found"}), 404
+        data = _build_session_dash_data(sess, use_psi=True)
+        if not data:
+            return jsonify({"error": "No telemetry data"}), 404
+        return jsonify(data)
+
     @app.route("/api/tire-sets")
     def api_tire_sets_list():
         car_driver_id = request.args.get("car_driver_id")
@@ -1782,15 +1966,31 @@ def create_app() -> Flask:
         for field in ("tire_set_id", "track_layout_id", "car_driver_id",
                        "ambient_temp_c", "track_temp_c",
                        "target_pressure_psi", "lap_count_notes",
+                       "roll_out_pressure_fl", "roll_out_pressure_fr",
+                       "roll_out_pressure_rl", "roll_out_pressure_rr",
+                       "planning_tag",
                        "track", "driver", "car", "outing_number", "session_number"):
             if field in data:
                 setattr(session, field, data[field])
+
+        if "bleed_events" in data:
+            val = data["bleed_events"]
+            if isinstance(val, list):
+                session.bleed_events = val
 
         if "car_driver_id" in data and data["car_driver_id"]:
             cd = store.get_car_driver(data["car_driver_id"])
             if cd:
                 session.driver = cd.driver_name
                 session.car = cd.car_identifier
+
+        if "target_pressure_psi" in data:
+            new_target = data["target_pressure_psi"]
+            if (new_target is not None
+                    and session.parsed_data
+                    and isinstance(session.parsed_data, dict)
+                    and session.parsed_data.get("version") == 2):
+                patch_pressure_summaries(session.parsed_data, float(new_target))
 
         store.update_session(session)
         return jsonify(out)
@@ -1869,8 +2069,8 @@ def create_app() -> Flask:
         s = store.get_session(sid)
         if not s:
             return jsonify({"error": "Not found"}), 404
-        store.delete_session(sid)
-        return jsonify({"ok": True})
+        affected_plans = store.delete_session(sid)
+        return jsonify({"ok": True, "affected_plans": affected_plans})
 
     @app.route("/api/sessions/<sid>/reprocess", methods=["POST"])
     def api_session_reprocess(sid: str):

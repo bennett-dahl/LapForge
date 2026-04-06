@@ -724,6 +724,81 @@ def _pressure_summary(
     return result
 
 
+def pressure_window_stats(
+    full_times: list[float],
+    full_series: dict[str, list[float | None]],
+    pressure_cols: list[str],
+    lap_splits: list[float],
+    target_psi: float,
+    lap_start: int,
+    lap_end: int | None,
+) -> dict:
+    """Compute per-corner stats within a specific lap window.
+
+    Returns {fl: {avg, min, max, lap_start_pressure, pct_in_band}, ...}
+    where lap_start_pressure is the first reading of that corner in the window.
+    """
+    if not pressure_cols or not full_times:
+        return {}
+
+    multiplier = BAR_TO_PSI
+
+    corner_vals: dict[str, list[float]] = {}
+    corner_lap_start: dict[str, dict[int, float]] = {}
+
+    for c in pressure_cols:
+        corner = _CORNER_MAP.get(c.lower())
+        if not corner:
+            continue
+        series_data = full_series.get(c, [])
+        for idx, t in enumerate(full_times):
+            lap = _lap_index_at(t, lap_splits)
+            if lap < lap_start:
+                continue
+            if lap_end is not None and lap > lap_end:
+                continue
+            raw = series_data[idx] if idx < len(series_data) else None
+            if raw is None:
+                continue
+            val = raw * multiplier
+            corner_vals.setdefault(corner, []).append(val)
+            if corner not in corner_lap_start:
+                corner_lap_start[corner] = {}
+            if lap not in corner_lap_start[corner]:
+                corner_lap_start[corner][lap] = val
+
+    result: dict = {}
+    for corner in ("fl", "fr", "rl", "rr"):
+        vals = corner_vals.get(corner, [])
+        if not vals:
+            result[corner] = {"avg": None, "min": None, "max": None,
+                              "lap_start_pressure": None, "pct_in_band": None,
+                              "delta_from_target": None}
+            continue
+        avg = sum(vals) / len(vals)
+        in_band = sum(1 for v in vals if abs(v - target_psi) <= 0.5) / len(vals) * 100
+        lap_start_vals = corner_lap_start.get(corner, {})
+        first_lap_start = lap_start_vals.get(lap_start)
+        delta = (first_lap_start - target_psi) if first_lap_start is not None else None
+        result[corner] = {
+            "avg": round(avg, 2),
+            "min": round(min(vals), 2),
+            "max": round(max(vals), 2),
+            "lap_start_pressure": round(first_lap_start, 2) if first_lap_start is not None else None,
+            "pct_in_band": round(in_band, 1),
+            "delta_from_target": round(delta, 2) if delta is not None else None,
+        }
+
+    all_vals = [v for vals in corner_vals.values() for v in vals]
+    if all_vals:
+        result["_summary"] = {
+            "avg_delta": round(sum(v - target_psi for v in all_vals) / len(all_vals), 2),
+            "pct_in_band": round(sum(1 for v in all_vals if abs(v - target_psi) <= 0.5) / len(all_vals) * 100, 1),
+        }
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Pipeline definition
 # ---------------------------------------------------------------------------
