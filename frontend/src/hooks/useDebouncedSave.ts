@@ -11,8 +11,8 @@ export function useDebouncedSave<T>(saveFn: SaveFn<T>, delay = 800) {
     (data: T) => {
       latestRef.current = data;
       if (timerRef.current) clearTimeout(timerRef.current);
-      setStatus('saving');
       timerRef.current = setTimeout(async () => {
+        setStatus('saving');
         try {
           await saveFn(data);
           setStatus('saved');

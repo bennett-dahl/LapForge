@@ -800,7 +800,7 @@ class SessionStore:
             weekend_id=row[2],
             session_ids=json.loads(row[3] or "[]"),
             checklist=json.loads(row[4] or "[]"),
-            planning_mode=row[5] or "both",
+            planning_mode=row[5] or "race",
             qual_plan=json.loads(row[6] or "{}"),
             race_plan=json.loads(row[7] or "{}"),
             qual_lap_range=json.loads(row[8] or "[2,3]"),

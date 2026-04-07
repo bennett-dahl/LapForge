@@ -90,7 +90,9 @@ export default function PlanRedirect() {
               onClick={() => navigate(`/plan/${weekendId}/${p.car_driver_id}`, { replace: true })}
             >
               <strong>{(p as { car_driver_display?: string }).car_driver_display || p.car_driver_id}</strong>
-              <span className="text-muted" style={{ marginLeft: 8 }}>{p.planning_mode} mode</span>
+              <span className="text-muted" style={{ marginLeft: 8 }}>
+                {p.planning_mode === 'qual' ? 'Qual' : 'Race'}
+              </span>
             </button>
           ))}
         </div>

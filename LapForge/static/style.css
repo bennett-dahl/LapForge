@@ -4,6 +4,7 @@
   --muted: #71717a;
   --accent: #c8960c;
   --border: #27272a;
+  --primary: #3b82f6;
 }
 
 * { box-sizing: border-box; }
@@ -210,7 +211,8 @@ a:hover { text-decoration: underline; }
   margin-left: var(--sb-width);
   width: calc(100vw - var(--sb-width));
   min-width: 0;
-  min-height: 100vh;
+  height: 100vh;
+  overflow-y: auto;
   overflow-x: hidden;
   transition: margin-left var(--sb-transition), width var(--sb-transition);
 }
@@ -261,6 +263,105 @@ form input, form select, form textarea {
 }
 form input[type="number"] { max-width: 8rem; }
 form textarea { min-height: 3rem; }
+
+/* Class-based form controls (used outside <form> and on Plan/Session pages) */
+.input,
+select.input,
+textarea.input {
+  padding: 0.25rem 0.4rem;
+  background: var(--border);
+  border: 1px solid var(--muted);
+  color: var(--fg);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-family: inherit;
+}
+.input[type="number"]::-webkit-outer-spin-button,
+.input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.input[type="number"] { -moz-appearance: textfield; }
+.form-input,
+.form-select,
+textarea.form-input {
+  padding: 0.4rem 0.6rem;
+  background: var(--border);
+  border: 1px solid var(--muted);
+  color: var(--fg);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-family: inherit;
+}
+.form-input,
+.form-select,
+textarea.form-input {
+  width: 100%;
+  max-width: 24rem;
+  margin-top: 0.2rem;
+}
+.form-input[type="number"] { max-width: 8rem; }
+textarea.form-input { min-height: 3rem; resize: vertical; }
+.form-select { appearance: auto; }
+
+.form-input-sm,
+.form-select-sm {
+  padding: 0.25rem 0.45rem;
+  font-size: 0.8rem;
+  border-radius: 3px;
+  background: var(--border);
+  border: 1px solid var(--muted);
+  color: var(--fg);
+  font-family: inherit;
+  width: 100%;
+}
+.form-select-sm { appearance: auto; }
+
+.input:focus,
+.form-input:focus,
+.form-select:focus,
+.form-input-sm:focus,
+.form-select-sm:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.form-label {
+  display: block;
+  margin-top: 0.5rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.form-label-quarter { flex: 1; min-width: 0; }
+.form-row { display: flex; gap: 0.75rem; }
+.form-actions { margin-top: 0.75rem; display: flex; gap: 0.5rem; }
+
+/* Settings / generic tabs */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 1rem;
+}
+.tab {
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.tab:hover {
+  background: rgba(255,255,255,0.06);
+}
+.tab-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
 
 /* Buttons */
 .btn {
@@ -1857,6 +1958,13 @@ thead .sm-col-fixed { z-index: 3; background: var(--bg, #1a1a2e); }
 .delta-negative { color: #f59e0b; }
 .delta-positive { color: #ef4444; }
 
+/* Plan session table resize handles */
+.data-table th { position: relative; }
+.data-table th > span[style*="col-resize"]:hover,
+.data-table th > span[style*="col-resize"]:active {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 /* Dashboard lap times */
 .data-table tbody tr.row-fast td { color: #22c55e; font-weight: 600; }
 .lap-times-row-clickable { cursor: pointer; }
@@ -2529,4 +2637,25 @@ thead .sm-col-fixed { z-index: 3; background: var(--bg, #1a1a2e); }
   .section-lap-fast { color: #16a34a !important; }
   .section-cell-time { color: #111 !important; }
   .section-cell-delta { font-size: 7pt; }
+}
+
+/* Context menu items (portal dropdowns) */
+.ctx-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 14px;
+  font-size: 13px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text, #e2e8f0);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ctx-menu-item:hover {
+  background: rgba(255,255,255,0.07);
+}
+.ctx-menu-danger {
+  color: var(--danger, #e74c3c);
 }

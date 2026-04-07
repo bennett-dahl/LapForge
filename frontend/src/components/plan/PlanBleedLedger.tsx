@@ -1,14 +1,16 @@
 import { useState } from 'react';
 import { apiPatch } from '../../api/client';
 import type { BoardSession, BleedEvent } from '../../types/models';
+import { pressureLabel, type PressureUnit } from '../../utils/units';
 import Button from '../ui/Button';
 
 interface Props {
   sessions: BoardSession[];
   refetchBoard: () => void;
+  pressureUnit: PressureUnit;
 }
 
-export default function PlanBleedLedger({ sessions, refetchBoard }: Props) {
+export default function PlanBleedLedger({ sessions, refetchBoard, pressureUnit }: Props) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({
     sessionId: '',
@@ -86,7 +88,7 @@ export default function PlanBleedLedger({ sessions, refetchBoard }: Props) {
             </select>
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>PSI removed</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{pressureLabel(pressureUnit).toUpperCase()} removed</span>
             <input className="input" type="number" step="0.1" style={{ width: 70 }}
               value={form.psi_removed} onChange={e => setForm(f => ({ ...f, psi_removed: e.target.value }))} />
           </label>
@@ -123,7 +125,7 @@ export default function PlanBleedLedger({ sessions, refetchBoard }: Props) {
                 <th>Session</th>
                 <th>Corner</th>
                 <th>Type</th>
-                <th>PSI</th>
+                <th>{pressureLabel(pressureUnit).toUpperCase()}</th>
                 <th>Lap</th>
                 <th>TPMS before</th>
                 <th>TPMS after</th>

@@ -13,8 +13,10 @@ import TirePressureChart from '../components/tools/TirePressureChart';
 import SectionEditor from '../components/tools/SectionEditor';
 import SectionMetrics from '../components/tools/SectionMetrics';
 import {
+  convertPressure,
   convertTemp,
   distanceAxisTitle,
+  pressureLabel,
   storagePressureUnit,
   tempLabel,
   type DistanceUnit,
@@ -22,6 +24,7 @@ import {
   type SpeedUnit,
   type TempUnit,
 } from '../utils/units';
+import SessionRolloutPressureModal from '../components/session/SessionRolloutPressureModal';
 
 const LS_SESSION_PRESSURE = 'session_pressure_unit';
 const LS_SESSION_TEMP = 'session_temp_unit';
@@ -78,6 +81,7 @@ export default function SessionDetailPage() {
   const [view, setView] = useState<ViewMode>('dashboard');
   const [templateOpen, setTemplateOpen] = useState(false);
   const [dashLayout, setDashLayout] = useState<DashboardModule[] | null>(null);
+  const [rolloutModalOpen, setRolloutModalOpen] = useState(false);
 
   const { data: settingsData } = useQuery({
     queryKey: ['settings'],
@@ -599,24 +603,44 @@ export default function SessionDetailPage() {
             )}
 
             {view === 'tire-pressure' && (
-              !dashData || !tirePressureOk || !tpmsSeries ? (
-                <p className="muted">No TPMS pressure channels for this session.</p>
-              ) : (
-                <TirePressureChart
-                  xValues={xValues}
-                  xLabel={xLabel}
-                  pressureFL={tpmsSeries.tpms_press_fl}
-                  pressureFR={tpmsSeries.tpms_press_fr}
-                  pressureRL={tpmsSeries.tpms_press_rl}
-                  pressureRR={tpmsSeries.tpms_press_rr}
-                  target={dashData.target_pressure_psi ?? null}
-                  height={320}
-                  xCursorField={xCursorField}
-                  seriesPressureUnit={tpmsSeriesPressureUnit}
-                  displayPressureUnit={pressureUnit}
-                  distanceDisplayUnit={distanceUnit}
+              <>
+                <RolloutCard
+                  session={data.session}
+                  pressureUnit={pressureUnit}
+                  onEdit={() => setRolloutModalOpen(true)}
                 />
-              )
+                <SessionRolloutPressureModal
+                  open={rolloutModalOpen}
+                  onClose={() => setRolloutModalOpen(false)}
+                  onSuccess={() => qc.invalidateQueries({ queryKey: ['session-detail', id] })}
+                  sessionId={id!}
+                  displayUnit={pressureUnit}
+                  initialCorners={{
+                    fl: safeBarToDisplay(data.session.roll_out_pressure_fl, pressureUnit),
+                    fr: safeBarToDisplay(data.session.roll_out_pressure_fr, pressureUnit),
+                    rl: safeBarToDisplay(data.session.roll_out_pressure_rl, pressureUnit),
+                    rr: safeBarToDisplay(data.session.roll_out_pressure_rr, pressureUnit),
+                  }}
+                />
+                {!dashData || !tirePressureOk || !tpmsSeries ? (
+                  <p className="muted">No TPMS pressure channels for this session.</p>
+                ) : (
+                  <TirePressureChart
+                    xValues={xValues}
+                    xLabel={xLabel}
+                    pressureFL={tpmsSeries.tpms_press_fl}
+                    pressureFR={tpmsSeries.tpms_press_fr}
+                    pressureRL={tpmsSeries.tpms_press_rl}
+                    pressureRR={tpmsSeries.tpms_press_rr}
+                    target={dashData.target_pressure_psi ?? null}
+                    height={320}
+                    xCursorField={xCursorField}
+                    seriesPressureUnit={tpmsSeriesPressureUnit}
+                    displayPressureUnit={pressureUnit}
+                    distanceDisplayUnit={distanceUnit}
+                  />
+                )}
+              </>
             )}
 
             {view === 'track-map' && (
@@ -1083,6 +1107,45 @@ function SessionInfoPanel({
           </>
         )}
       </dl>
+    </div>
+  );
+}
+
+function safeBarToDisplay(raw: unknown, unit: PressureUnit): number | null {
+  const v = Number(raw ?? undefined);
+  if (!Number.isFinite(v)) return null;
+  return convertPressure(v, 'bar', unit);
+}
+
+function RolloutCard({
+  session,
+  pressureUnit,
+  onEdit,
+}: {
+  session: Record<string, unknown>;
+  pressureUnit: PressureUnit;
+  onEdit: () => void;
+}) {
+  const corners = (['fl', 'fr', 'rl', 'rr'] as const).map(c => ({
+    label: c.toUpperCase(),
+    value: safeBarToDisplay(session[`roll_out_pressure_${c}`], pressureUnit),
+  }));
+  const hasAny = corners.some(c => c.value != null);
+
+  return (
+    <div className="card" style={{ padding: '10px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 16 }}>
+      <span style={{ fontSize: 13, fontWeight: 600, flexShrink: 0 }}>Roll-out</span>
+      <div style={{ display: 'flex', gap: 16, flex: 1 }}>
+        {corners.map(c => (
+          <span key={c.label} style={{ fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>
+            <span className="text-muted" style={{ marginRight: 4 }}>{c.label}</span>
+            {c.value != null ? `${c.value.toFixed(1)} ${pressureLabel(pressureUnit)}` : '—'}
+          </span>
+        ))}
+      </div>
+      <Button variant="ghost" size="sm" onClick={onEdit}>
+        {hasAny ? 'Edit' : 'Set roll-out'}
+      </Button>
     </div>
   );
 }

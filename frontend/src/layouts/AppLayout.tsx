@@ -2,6 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import type { AuthUserResponse } from '../types/api';
 import { apiGet } from '../api/client';
+import ErrorBoundary from '../components/ui/ErrorBoundary';
 
 interface NavItem {
   to: string;
@@ -115,7 +116,9 @@ export default function AppLayout() {
         </div>
       </aside>
       <main className="main-content">
-        <Outlet />
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );

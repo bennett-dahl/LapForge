@@ -741,15 +741,16 @@ def pressure_window_stats(
     if not pressure_cols or not full_times:
         return {}
 
-    multiplier = BAR_TO_PSI
-
+    seen_corners: set[str] = set()
     corner_vals: dict[str, list[float]] = {}
     corner_lap_start: dict[str, dict[int, float]] = {}
 
     for c in pressure_cols:
         corner = _CORNER_MAP.get(c.lower())
-        if not corner:
+        if not corner or corner in seen_corners:
             continue
+        seen_corners.add(corner)
+        multiplier = 1.0 if c.lower().endswith("_psi") else BAR_TO_PSI
         series_data = full_series.get(c, [])
         for idx, t in enumerate(full_times):
             lap = _lap_index_at(t, lap_splits)
@@ -797,6 +798,224 @@ def pressure_window_stats(
         }
 
     return result
+
+
+def pressure_lap_band_summary(
+    full_times: list[float],
+    full_series: dict[str, list[float | None]],
+    pressure_cols: list[str],
+    lap_splits: list[float],
+    target_psi: float,
+    acceptable_psi: float,
+    optimal_psi: float,
+    lap_start: int,
+    lap_end: int | None,
+    *,
+    acceptable_upper: float | None = None,
+    acceptable_lower: float | None = None,
+    optimal_upper: float | None = None,
+    optimal_lower: float | None = None,
+) -> dict:
+    """Per-lap band summary using worst-corner rule.
+
+    A lap is "in band" only when ALL four corners' mean pressure for that lap
+    falls within the tolerance window around *target_psi*.  Tolerances can be
+    asymmetric: ``_upper`` = allowed overshoot, ``_lower`` = allowed undershoot.
+    When the split values are None the symmetric ``acceptable_psi`` /
+    ``optimal_psi`` value is used for both directions.
+
+    Lap numbers returned are window-relative (first lap in the range → 1).
+
+    Returns dict with keys:
+        first_acceptable_lap, last_acceptable_lap,
+        first_optimal_lap, last_optimal_lap,
+        laps_outside_optimal_after_entry  (None if never entered optimal),
+        avg_first_acceptable_lap, avg_last_acceptable_lap,
+        avg_first_optimal_lap, avg_last_optimal_lap,
+        corner_delta_psi  ({fl, fr, rl, rr} mean delta from target)
+    """
+    _empty: dict = {
+        "first_acceptable_lap": None, "last_acceptable_lap": None,
+        "first_optimal_lap": None, "last_optimal_lap": None,
+        "laps_outside_optimal_after_entry": None,
+        "avg_first_acceptable_lap": None, "avg_last_acceptable_lap": None,
+        "avg_first_optimal_lap": None, "avg_last_optimal_lap": None,
+        "corner_delta_psi": None,
+        "sustained_delta_psi": None,
+        "max_delta_psi": None,
+    }
+    if not pressure_cols or not full_times:
+        return _empty
+
+    seen_corners: set[str] = set()
+    corner_lap_vals: dict[str, dict[int, list[float]]] = {}
+    for c in pressure_cols:
+        corner = _CORNER_MAP.get(c.lower())
+        if not corner or corner in seen_corners:
+            continue
+        seen_corners.add(corner)
+        multiplier = 1.0 if c.lower().endswith("_psi") else BAR_TO_PSI
+        series_data = full_series.get(c, [])
+        for idx, t in enumerate(full_times):
+            lap = _lap_index_at(t, lap_splits)
+            if lap < lap_start:
+                continue
+            if lap_end is not None and lap > lap_end:
+                continue
+            raw = series_data[idx] if idx < len(series_data) else None
+            if raw is None:
+                continue
+            val = raw * multiplier
+            corner_lap_vals.setdefault(corner, {}).setdefault(lap, []).append(val)
+
+    all_laps_in_window = sorted({
+        lap for clv in corner_lap_vals.values() for lap in clv
+    })
+    if not all_laps_in_window:
+        return _empty
+
+    a_upper = acceptable_upper if acceptable_upper is not None else acceptable_psi
+    a_lower = acceptable_lower if acceptable_lower is not None else acceptable_psi
+    o_upper = optimal_upper if optimal_upper is not None else optimal_psi
+    o_lower = optimal_lower if optimal_lower is not None else optimal_psi
+
+    def _lap_in_band(lap: int, upper: float, lower: float) -> bool:
+        for corner in ("fl", "fr", "rl", "rr"):
+            vals = corner_lap_vals.get(corner, {}).get(lap)
+            if not vals:
+                return False
+            mean = sum(vals) / len(vals)
+            delta = mean - target_psi
+            if delta > upper or delta < -lower:
+                return False
+        return True
+
+    first_acceptable: int | None = None
+    last_acceptable: int | None = None
+    first_optimal: int | None = None
+    last_optimal: int | None = None
+
+    for lap in all_laps_in_window:
+        rel = lap - lap_start + 1
+        if _lap_in_band(lap, a_upper, a_lower):
+            if first_acceptable is None:
+                first_acceptable = rel
+            last_acceptable = rel
+        if _lap_in_band(lap, o_upper, o_lower):
+            if first_optimal is None:
+                first_optimal = rel
+            last_optimal = rel
+
+    laps_outside: int | None = None
+    if first_optimal is not None:
+        abs_first_optimal = first_optimal + lap_start - 1
+        laps_outside = 0
+        for lap in all_laps_in_window:
+            if lap < abs_first_optimal:
+                continue
+            if not _lap_in_band(lap, o_upper, o_lower):
+                laps_outside += 1
+
+    # Average-of-4-corners band: uses the mean of all 4 corner means per lap
+    avg_first_acceptable: int | None = None
+    avg_last_acceptable: int | None = None
+    avg_first_optimal: int | None = None
+    avg_last_optimal: int | None = None
+    avg_optimal_abs_lap: int | None = None
+    best_avg_lap: int | None = None
+    best_avg_abs_delta: float = float("inf")
+
+    for lap in all_laps_in_window:
+        corner_means = []
+        for corner in ("fl", "fr", "rl", "rr"):
+            vals = corner_lap_vals.get(corner, {}).get(lap)
+            if vals:
+                corner_means.append(sum(vals) / len(vals))
+        if not corner_means:
+            continue
+        avg_delta = (sum(corner_means) / len(corner_means)) - target_psi
+        rel = lap - lap_start + 1
+        if -a_lower <= avg_delta <= a_upper:
+            if avg_first_acceptable is None:
+                avg_first_acceptable = rel
+            avg_last_acceptable = rel
+        if -o_lower <= avg_delta <= o_upper:
+            if avg_first_optimal is None:
+                avg_first_optimal = rel
+                avg_optimal_abs_lap = lap
+            avg_last_optimal = rel
+        if abs(avg_delta) < best_avg_abs_delta:
+            best_avg_abs_delta = abs(avg_delta)
+            best_avg_lap = lap
+
+    # Per-corner delta at the lap where the 4-tire average is closest to target
+    corner_delta_psi: dict[str, float | None] = {}
+    if best_avg_lap is not None:
+        for corner in ("fl", "fr", "rl", "rr"):
+            vals = corner_lap_vals.get(corner, {}).get(best_avg_lap)
+            if vals:
+                corner_delta_psi[corner] = round(
+                    (sum(vals) / len(vals)) - target_psi, 2,
+                )
+            else:
+                corner_delta_psi[corner] = None
+    else:
+        for corner in ("fl", "fr", "rl", "rr"):
+            corner_delta_psi[corner] = None
+
+    # Sustained per-corner delta: average from optimal entry through end of window
+    sustained_delta_psi: dict[str, float | None] = {}
+    if avg_optimal_abs_lap is not None:
+        for corner in ("fl", "fr", "rl", "rr"):
+            vals_after: list[float] = []
+            for lap in all_laps_in_window:
+                if lap < avg_optimal_abs_lap:
+                    continue
+                lv = corner_lap_vals.get(corner, {}).get(lap)
+                if lv:
+                    vals_after.extend(lv)
+            if vals_after:
+                sustained_delta_psi[corner] = round(
+                    (sum(vals_after) / len(vals_after)) - target_psi, 2,
+                )
+            else:
+                sustained_delta_psi[corner] = None
+    else:
+        for corner in ("fl", "fr", "rl", "rr"):
+            sustained_delta_psi[corner] = None
+
+    # Peak pressure per corner after the 4-tire avg reaches target, as delta from target
+    max_delta_psi: dict[str, float | None] = {}
+    if best_avg_lap is not None:
+        for corner in ("fl", "fr", "rl", "rr"):
+            peak: float | None = None
+            for lap in all_laps_in_window:
+                if lap < best_avg_lap:
+                    continue
+                lv = corner_lap_vals.get(corner, {}).get(lap)
+                if lv:
+                    for v in lv:
+                        if peak is None or v > peak:
+                            peak = v
+            max_delta_psi[corner] = round(peak - target_psi, 2) if peak is not None else None
+    else:
+        for corner in ("fl", "fr", "rl", "rr"):
+            max_delta_psi[corner] = None
+
+    return {
+        "first_acceptable_lap": first_acceptable,
+        "last_acceptable_lap": last_acceptable,
+        "first_optimal_lap": first_optimal,
+        "last_optimal_lap": last_optimal,
+        "laps_outside_optimal_after_entry": laps_outside,
+        "avg_first_acceptable_lap": avg_first_acceptable,
+        "avg_last_acceptable_lap": avg_last_acceptable,
+        "avg_first_optimal_lap": avg_first_optimal,
+        "avg_last_optimal_lap": avg_last_optimal,
+        "corner_delta_psi": corner_delta_psi,
+        "sustained_delta_psi": sustained_delta_psi,
+        "max_delta_psi": max_delta_psi,
+    }
 
 
 # ---------------------------------------------------------------------------

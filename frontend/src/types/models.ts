@@ -83,6 +83,12 @@ export interface PlanPressures {
   rr?: number | null;
   target?: number | null;
   notes?: string;
+  acceptable_band_psi?: number | null;
+  optimal_band_psi?: number | null;
+  acceptable_upper_psi?: number | null;
+  acceptable_lower_psi?: number | null;
+  optimal_upper_psi?: number | null;
+  optimal_lower_psi?: number | null;
 }
 
 export interface ChecklistStep {
@@ -100,7 +106,7 @@ export interface Plan {
   weekend_id: string;
   session_ids: string[];
   checklist: ChecklistStep[];
-  planning_mode: 'qual' | 'race' | 'both';
+  planning_mode: 'qual' | 'race';
   qual_plan: PlanPressures;
   race_plan: PlanPressures;
   qual_lap_range: [number, number];
@@ -111,21 +117,19 @@ export interface Plan {
   created_at: string;
 }
 
-export interface WindowCornerStat {
-  avg: number | null;
-  min: number | null;
-  max: number | null;
-  lap_start_pressure: number | null;
-  pct_in_band: number | null;
-  delta_from_target: number | null;
-}
-
-export interface WindowStats {
-  fl?: WindowCornerStat;
-  fr?: WindowCornerStat;
-  rl?: WindowCornerStat;
-  rr?: WindowCornerStat;
-  _summary?: { avg_delta: number; pct_in_band: number };
+export interface LapBandSummary {
+  first_acceptable_lap: number | null;
+  last_acceptable_lap: number | null;
+  first_optimal_lap: number | null;
+  last_optimal_lap: number | null;
+  laps_outside_optimal_after_entry: number | null;
+  avg_first_acceptable_lap: number | null;
+  avg_last_acceptable_lap: number | null;
+  avg_first_optimal_lap: number | null;
+  avg_last_optimal_lap: number | null;
+  corner_delta_psi: Record<string, number | null> | null;
+  sustained_delta_psi: Record<string, number | null> | null;
+  max_delta_psi: Record<string, number | null> | null;
 }
 
 export interface BoardSession {
@@ -140,8 +144,8 @@ export interface BoardSession {
   bleed_events: BleedEvent[];
   planning_tag: string | null;
   tire_set_name: string | null;
-  qual_window_stats: WindowStats | null;
-  race_window_stats: WindowStats | null;
+  qual_lap_band: LapBandSummary | null;
+  race_lap_band: LapBandSummary | null;
 }
 
 export interface TrackSection {

@@ -9,7 +9,6 @@ export default function PlanModeBar({ plan, onChange }: Props) {
   const modes: Array<{ value: Plan['planning_mode']; label: string }> = [
     { value: 'qual', label: 'Qual' },
     { value: 'race', label: 'Race' },
-    { value: 'both', label: 'Both' },
   ];
 
   return (

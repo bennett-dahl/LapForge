@@ -1,4 +1,4 @@
-import type { Plan, BoardSession, PlanPressures, WindowStats } from '../../types/models';
+import type { Plan, BoardSession, PlanPressures } from '../../types/models';
 
 interface Props {
   plan: Plan;
@@ -7,8 +7,9 @@ interface Props {
 }
 
 export default function PlanDecisionCards({ plan, sessions, onChange }: Props) {
-  const showQual = plan.planning_mode === 'qual' || plan.planning_mode === 'both';
-  const showRace = plan.planning_mode === 'race' || plan.planning_mode === 'both';
+  const mode = plan.planning_mode ?? 'race';
+  const showQual = mode === 'qual';
+  const showRace = mode === 'race';
 
   const stabilizationSession = sessions.find(s => s.planning_tag === 'stabilization');
 
@@ -20,7 +21,7 @@ export default function PlanDecisionCards({ plan, sessions, onChange }: Props) {
   return (
     <div style={{
       display: 'grid',
-      gridTemplateColumns: showQual && showRace ? '1fr 1fr' : '1fr',
+      gridTemplateColumns: '1fr',
       gap: 12,
     }}>
       {showQual && (
@@ -29,7 +30,7 @@ export default function PlanDecisionCards({ plan, sessions, onChange }: Props) {
           pressures={plan.qual_plan}
           onPressureChange={(v) => onChange({ qual_plan: v } as Partial<Plan>)}
           stat={formatAggregateStat(sessions, 'qual')}
-          statLabel="Window stat"
+          statLabel="Optimal sessions"
         />
       )}
       {showRace && (
@@ -38,7 +39,7 @@ export default function PlanDecisionCards({ plan, sessions, onChange }: Props) {
           pressures={plan.race_plan}
           onPressureChange={(v) => onChange({ race_plan: v } as Partial<Plan>)}
           stat={formatAggregateStat(sessions, 'race')}
-          statLabel="Stint stat"
+          statLabel="Optimal sessions"
         >
           <div style={{ marginTop: 8, fontSize: 12, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
             <div style={{ display: 'flex', gap: 16, marginBottom: 6 }}>
@@ -125,7 +126,18 @@ function DecisionCard({
         ))}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, fontSize: 12 }}>
-        <span className="text-muted">Target: {pressures.target ?? '—'} psi</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span className="text-muted">Target</span>
+          <input
+            className="input"
+            type="number"
+            step="0.1"
+            style={{ width: 70, textAlign: 'center', fontWeight: 600 }}
+            value={pressures.target ?? ''}
+            onChange={e => set('target', e.target.value)}
+          />
+          <span className="text-muted">psi</span>
+        </label>
         <span className="text-muted">{statLabel}: {stat ?? '—'}</span>
       </div>
       {children}
@@ -134,13 +146,12 @@ function DecisionCard({
 }
 
 function formatAggregateStat(sessions: BoardSession[], mode: 'qual' | 'race'): string | null {
-  const stats: WindowStats[] = sessions
-    .map(s => mode === 'qual' ? s.qual_window_stats : s.race_window_stats)
-    .filter((s): s is WindowStats => s != null && s._summary != null);
-  if (stats.length === 0) return null;
-  const avgPct = stats.reduce((a, s) => a + (s._summary?.pct_in_band ?? 0), 0) / stats.length;
-  const avgDelta = stats.reduce((a, s) => a + (s._summary?.avg_delta ?? 0), 0) / stats.length;
-  return `${avgPct.toFixed(0)}% in band (Δ${avgDelta > 0 ? '+' : ''}${avgDelta.toFixed(1)})`;
+  if (sessions.length === 0) return null;
+  const optimalCount = sessions.filter(s => {
+    const band = mode === 'qual' ? s.qual_lap_band : s.race_lap_band;
+    return band?.first_optimal_lap != null;
+  }).length;
+  return `${optimalCount}/${sessions.length}`;
 }
 
 function calcDelta(

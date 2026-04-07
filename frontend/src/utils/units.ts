@@ -48,6 +48,10 @@ export function pressureLabel(unit: PressureUnit): string {
   return unit === 'bar' ? 'bar' : 'psi';
 }
 
+export function pressureDecimals(unit: PressureUnit): number {
+  return unit === 'bar' ? 2 : 1;
+}
+
 export function tempLabel(unit: TempUnit): string {
   return unit === 'f' ? '°f' : '°c';
 }

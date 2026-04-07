@@ -21,6 +21,7 @@ from LapForge.processing import (
     needs_reprocess,
     normalize_channels,
     patch_pressure_summaries,
+    pressure_lap_band_summary,
     process_session,
     sanitize_for_json,
     smooth_pressure,
@@ -332,3 +333,155 @@ class TestPatchPressureSummaries:
         patch_pressure_summaries(result, 25.0)
         bar_target = result["summary"]["pressure_summary_bar"]["target"]
         assert bar_target == pytest.approx(25.0 / BAR_TO_PSI, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# pressure_lap_band_summary tests
+# ---------------------------------------------------------------------------
+
+class TestPressureLapBandSummary:
+    """Tests for the worst-corner lap-band summary function."""
+
+    @staticmethod
+    def _build(corner_psi_per_lap: dict[str, list[float]]):
+        """Helper: build times/series/splits for given per-corner per-lap PSI values.
+
+        corner_psi_per_lap: {"fl": [20.0, 20.5, 21.0], ...}
+        Each list index = one lap with one sample per lap (converted to bar).
+        bisect_right on lap_splits maps time i+0.5 to lap i+1.
+        """
+        n_laps = max(len(v) for v in corner_psi_per_lap.values())
+        lap_splits = [float(i) for i in range(n_laps)]
+        times = [float(i) + 0.5 for i in range(n_laps)]
+        series: dict[str, list[float | None]] = {}
+        col_map = {"fl": "tpms_press_fl", "fr": "tpms_press_fr",
+                    "rl": "tpms_press_rl", "rr": "tpms_press_rr"}
+        pressure_cols = []
+        for corner, col_name in col_map.items():
+            psi_vals = corner_psi_per_lap.get(corner, [])
+            series[col_name] = [v / BAR_TO_PSI for v in psi_vals]
+            pressure_cols.append(col_name)
+        return times, series, pressure_cols, lap_splits
+
+    def test_all_in_optimal(self):
+        data = {"fl": [20.0, 20.1], "fr": [20.0, 20.1],
+                "rl": [20.0, 20.1], "rr": [20.0, 20.1]}
+        times, series, pcols, splits = self._build(data)
+        result = pressure_lap_band_summary(
+            times, series, pcols, splits,
+            target_psi=20.0, acceptable_psi=0.5, optimal_psi=0.25,
+            lap_start=1, lap_end=2,
+        )
+        assert result["first_acceptable_lap"] == 1
+        assert result["last_acceptable_lap"] == 2
+        assert result["first_optimal_lap"] == 1
+        assert result["last_optimal_lap"] == 2
+        assert result["laps_outside_optimal_after_entry"] == 0
+
+    def test_never_in_optimal(self):
+        data = {"fl": [21.0, 21.5], "fr": [21.0, 21.5],
+                "rl": [21.0, 21.5], "rr": [21.0, 21.5]}
+        times, series, pcols, splits = self._build(data)
+        result = pressure_lap_band_summary(
+            times, series, pcols, splits,
+            target_psi=20.0, acceptable_psi=0.5, optimal_psi=0.25,
+            lap_start=1, lap_end=2,
+        )
+        assert result["first_optimal_lap"] is None
+        assert result["last_optimal_lap"] is None
+        assert result["laps_outside_optimal_after_entry"] is None
+
+    def test_laps_outside_optimal_after_entry(self):
+        # Laps: 1=FL@21 (out), 2=FL@20.1 (optimal), 3=FL@20.8 (out), 4=FL@20.0 (optimal)
+        data = {"fl": [21.0, 20.1, 20.8, 20.0], "fr": [20.0, 20.1, 20.0, 20.0],
+                "rl": [20.0, 20.1, 20.0, 20.0], "rr": [20.0, 20.1, 20.0, 20.0]}
+        times, series, pcols, splits = self._build(data)
+        result = pressure_lap_band_summary(
+            times, series, pcols, splits,
+            target_psi=20.0, acceptable_psi=1.0, optimal_psi=0.25,
+            lap_start=1, lap_end=4,
+        )
+        assert result["first_optimal_lap"] == 2
+        assert result["laps_outside_optimal_after_entry"] == 1
+
+    def test_single_lap_window(self):
+        data = {"fl": [20.0, 20.0, 20.0], "fr": [20.0, 20.0, 20.0],
+                "rl": [20.0, 20.0, 20.0], "rr": [20.0, 20.0, 20.0]}
+        times, series, pcols, splits = self._build(data)
+        result = pressure_lap_band_summary(
+            times, series, pcols, splits,
+            target_psi=20.0, acceptable_psi=0.5, optimal_psi=0.25,
+            lap_start=1, lap_end=1,
+        )
+        assert result["first_acceptable_lap"] == 1
+        assert result["last_acceptable_lap"] == 1
+        assert result["first_optimal_lap"] == 1
+        assert result["last_optimal_lap"] == 1
+        assert result["laps_outside_optimal_after_entry"] == 0
+
+    def test_empty_data(self):
+        result = pressure_lap_band_summary(
+            [], {}, [], [],
+            target_psi=20.0, acceptable_psi=0.5, optimal_psi=0.25,
+            lap_start=1, lap_end=3,
+        )
+        assert result["first_acceptable_lap"] is None
+        assert result["laps_outside_optimal_after_entry"] is None
+
+    def test_psi_channels_only(self):
+        """Sessions with _psi channels (data already in PSI) should work correctly."""
+        n_laps = 2
+        lap_splits = [float(i) for i in range(n_laps)]
+        times = [float(i) + 0.5 for i in range(n_laps)]
+        series = {
+            "tpms_press_fl_psi": [20.0, 20.1],
+            "tpms_press_fr_psi": [20.0, 20.1],
+            "tpms_press_rl_psi": [20.0, 20.1],
+            "tpms_press_rr_psi": [20.0, 20.1],
+        }
+        pcols = list(series.keys())
+        result = pressure_lap_band_summary(
+            times, series, pcols, lap_splits,
+            target_psi=20.0, acceptable_psi=0.5, optimal_psi=0.25,
+            lap_start=1, lap_end=2,
+        )
+        assert result["first_optimal_lap"] == 1
+        assert result["last_optimal_lap"] == 2
+        assert result["laps_outside_optimal_after_entry"] == 0
+
+    def test_mixed_bar_and_psi_channels(self):
+        """When both bar and _psi channels exist for the same corner, only one is used."""
+        n_laps = 2
+        lap_splits = [float(i) for i in range(n_laps)]
+        times = [float(i) + 0.5 for i in range(n_laps)]
+        series = {
+            "tpms_press_fl": [20.0 / BAR_TO_PSI, 20.1 / BAR_TO_PSI],
+            "tpms_press_fl_psi": [20.0, 20.1],
+            "tpms_press_fr": [20.0 / BAR_TO_PSI, 20.1 / BAR_TO_PSI],
+            "tpms_press_fr_psi": [20.0, 20.1],
+            "tpms_press_rl": [20.0 / BAR_TO_PSI, 20.1 / BAR_TO_PSI],
+            "tpms_press_rl_psi": [20.0, 20.1],
+            "tpms_press_rr": [20.0 / BAR_TO_PSI, 20.1 / BAR_TO_PSI],
+            "tpms_press_rr_psi": [20.0, 20.1],
+        }
+        pcols = list(series.keys())
+        result = pressure_lap_band_summary(
+            times, series, pcols, lap_splits,
+            target_psi=20.0, acceptable_psi=0.5, optimal_psi=0.25,
+            lap_start=1, lap_end=2,
+        )
+        assert result["first_optimal_lap"] == 1
+        assert result["last_optimal_lap"] == 2
+
+    def test_worst_corner_rule(self):
+        """One corner out of band on lap 1 → whole lap is not in band."""
+        data = {"fl": [20.0, 20.0], "fr": [20.0, 20.0],
+                "rl": [20.0, 20.0], "rr": [22.0, 20.0]}
+        times, series, pcols, splits = self._build(data)
+        result = pressure_lap_band_summary(
+            times, series, pcols, splits,
+            target_psi=20.0, acceptable_psi=0.5, optimal_psi=0.25,
+            lap_start=1, lap_end=2,
+        )
+        assert result["first_acceptable_lap"] == 2
+        assert result["first_optimal_lap"] == 2

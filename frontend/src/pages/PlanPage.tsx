@@ -1,17 +1,28 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost, apiPatch } from '../api/client';
-import type { Plan, CarDriver, Weekend, PlanPressures } from '../types/models';
-import type { PlanBoardDataResponse, PlanCreateResponse } from '../types/api';
+import type { Plan, CarDriver, Weekend } from '../types/models';
+import type { PlanBoardDataResponse, PlanCreateResponse, SettingsResponse } from '../types/api';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
+import { pressureLabel, tempLabel, type PressureUnit, type TempUnit } from '../utils/units';
 import Button from '../components/ui/Button';
 import PlanChecklist from '../components/plan/PlanChecklist';
-import PlanModeBar from '../components/plan/PlanModeBar';
-import PlanDecisionCards from '../components/plan/PlanDecisionCards';
+import PlanPlanHeader from '../components/plan/PlanPlanHeader';
 import PlanSessionTable from '../components/plan/PlanSessionTable';
 import PlanBleedLedger from '../components/plan/PlanBleedLedger';
 import PlanPressureCharts from '../components/plan/PlanPressureCharts';
+
+const LS_PRESSURE = 'session_pressure_unit';
+const LS_TEMP = 'session_temp_unit';
+
+function readLsUnit<T extends string>(key: string, allowed: T[], fallback: T): T {
+  try {
+    const v = localStorage.getItem(key) as T | null;
+    if (v && allowed.includes(v)) return v;
+  } catch { /* ignore */ }
+  return fallback;
+}
 
 export default function PlanPage() {
   const { weekendId, carDriverId } = useParams<{ weekendId: string; carDriverId: string }>();
@@ -39,7 +50,7 @@ export default function PlanPage() {
     queryFn: () => apiGet<CarDriver[]>('/api/car-drivers'),
   });
 
-  const { data: weekendPlans = [] } = useQuery({
+  const { data: weekendPlans = [], status: plansStatus } = useQuery({
     queryKey: ['weekend-plans', weekendId],
     queryFn: () => apiGet<(Plan & { car_driver_display?: string })[]>(`/api/weekends/${weekendId}/plans`),
     enabled: !!weekendId,
@@ -48,17 +59,10 @@ export default function PlanPage() {
   const currentPlan = weekendPlans.find(p => p.car_driver_id === carDriverId);
   const currentCar = carDrivers.find(cd => cd.id === carDriverId);
 
-  const [needsCreate, setNeedsCreate] = useState(false);
-
-  useEffect(() => {
-    if (weekendPlans.length > 0 && !currentPlan && carDriverId) {
-      setNeedsCreate(true);
-    } else if (weekendPlans.length === 0 && carDriverId) {
-      setNeedsCreate(true);
-    } else {
-      setNeedsCreate(false);
-    }
-  }, [weekendPlans, currentPlan, carDriverId]);
+  // Only show "Create Plan" once the plans query has actually loaded (not while pending).
+  // Using a derived value avoids the race where carDrivers resolves before weekendPlans,
+  // causing needsCreate=true+currentCar=truthy to flash the "Create Plan" screen.
+  const needsCreate = plansStatus !== 'pending' && !currentPlan && !!carDriverId;
 
   async function handleCreatePlan() {
     if (!carDriverId || !weekendId) return;
@@ -68,7 +72,6 @@ export default function PlanPage() {
         weekend_id: weekendId,
       });
       qc.invalidateQueries({ queryKey: ['weekend-plans', weekendId] });
-      setNeedsCreate(false);
     } catch {}
   }
 
@@ -78,16 +81,25 @@ export default function PlanPage() {
     enabled: !!currentPlan?.id,
   });
 
+  const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const planSaveFn = useCallback(
     async (data: Partial<Plan>) => {
       if (!currentPlan?.id) return;
       await apiPatch(`/api/plans/${currentPlan.id}`, data);
-      qc.invalidateQueries({ queryKey: ['weekend-plans', weekendId] });
-      qc.invalidateQueries({ queryKey: ['plan-board-data', currentPlan.id] });
+      if (refetchTimerRef.current) clearTimeout(refetchTimerRef.current);
+      refetchTimerRef.current = setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['weekend-plans', weekendId] });
+        qc.invalidateQueries({ queryKey: ['plan-board-data', currentPlan.id] });
+      }, 2000);
     },
     [currentPlan?.id, weekendId, qc],
   );
   const { save: debouncedSave, status: saveStatus } = useDebouncedSave(planSaveFn);
+
+  useEffect(() => {
+    return () => { if (refetchTimerRef.current) clearTimeout(refetchTimerRef.current); };
+  }, []);
 
   const [panelCollapsed, setPanelCollapsed] = useState(() =>
     localStorage.getItem('plan_panel_collapsed') === '1',
@@ -99,12 +111,63 @@ export default function PlanPage() {
     localStorage.setItem('plan_panel_collapsed', next ? '1' : '0');
   }
 
+  // ---- unit toggle state (shared localStorage keys with session page) ----
+  const { data: settingsData } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => apiGet<SettingsResponse>('/api/settings'),
+  });
+
+  const unitsHydrated = useRef(false);
+  const [pressureUnit, setPressureUnitRaw] = useState<PressureUnit>(
+    () => readLsUnit(LS_PRESSURE, ['psi', 'bar'], 'psi'),
+  );
+  const [tempUnit, setTempUnitRaw] = useState<TempUnit>(
+    () => readLsUnit(LS_TEMP, ['c', 'f'], 'c'),
+  );
+
+  useEffect(() => {
+    if (!settingsData?.preferences || unitsHydrated.current) return;
+    unitsHydrated.current = true;
+    if (!localStorage.getItem(LS_PRESSURE)) {
+      const p = String(settingsData.preferences.default_pressure_unit ?? 'psi').toLowerCase();
+      setPressureUnitRaw(p === 'bar' ? 'bar' : 'psi');
+    }
+    if (!localStorage.getItem(LS_TEMP)) {
+      const t = String(settingsData.preferences.default_temp_unit ?? 'c').toLowerCase();
+      setTempUnitRaw(t === 'f' ? 'f' : 'c');
+    }
+  }, [settingsData]);
+
+  const setPressureUnit = useCallback((u: PressureUnit) => {
+    setPressureUnitRaw(u);
+    try { localStorage.setItem(LS_PRESSURE, u); } catch { /* ignore */ }
+  }, []);
+  const setTempUnit = useCallback((u: TempUnit) => {
+    setTempUnitRaw(u);
+    try { localStorage.setItem(LS_TEMP, u); } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     document.title = weekend ? `LapForge - ${weekend.name}` : 'LapForge - Plan';
   }, [weekend]);
 
-  const plan = boardData?.plan ?? currentPlan;
+  const serverPlan = boardData?.plan ?? currentPlan;
   const sessions = boardData?.sessions ?? [];
+
+  const [localOverride, setLocalOverride] = useState<Partial<Plan>>({});
+  const prevBoardDataRef = useRef(boardData);
+  if (boardData !== prevBoardDataRef.current) {
+    prevBoardDataRef.current = boardData;
+    if (Object.keys(localOverride).length > 0) {
+      setLocalOverride({});
+    }
+  }
+
+  const plan = useMemo(() => {
+    if (!serverPlan) return serverPlan;
+    if (Object.keys(localOverride).length === 0) return serverPlan;
+    return { ...serverPlan, ...localOverride } as Plan;
+  }, [serverPlan, localOverride]);
 
   if (needsCreate && currentCar) {
     return (
@@ -127,6 +190,7 @@ export default function PlanPage() {
   }
 
   function handlePlanFieldChange(fields: Partial<Plan>) {
+    setLocalOverride(prev => ({ ...prev, ...fields }));
     debouncedSave(fields);
   }
 
@@ -177,63 +241,68 @@ export default function PlanPage() {
 
         <div style={{ flex: 1 }} />
 
-        <span style={{ fontSize: 12, color: 'var(--text-muted)', marginRight: 8 }}>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)', width: 70, textAlign: 'right' }}>
           {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved' : saveStatus === 'error' ? 'Save failed' : ''}
         </span>
 
-        <button
-          onClick={togglePanel}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 18, padding: '2px 6px' }}
-          title={panelCollapsed ? 'Expand checklist' : 'Collapse checklist'}
-        >
-          {panelCollapsed ? '☰' : '◀'}
-        </button>
+        <div className="unit-toggle-group" role="group" aria-label="Pressure unit">
+          <button type="button" className={`unit-toggle-btn${pressureUnit === 'psi' ? ' active' : ''}`} onClick={() => setPressureUnit('psi')}>
+            {pressureLabel('psi').toUpperCase()}
+          </button>
+          <button type="button" className={`unit-toggle-btn${pressureUnit === 'bar' ? ' active' : ''}`} onClick={() => setPressureUnit('bar')}>
+            {pressureLabel('bar').charAt(0).toUpperCase() + pressureLabel('bar').slice(1)}
+          </button>
+        </div>
+        <div className="unit-toggle-group" role="group" aria-label="Temperature unit">
+          <button type="button" className={`unit-toggle-btn${tempUnit === 'c' ? ' active' : ''}`} onClick={() => setTempUnit('c')}>
+            {tempLabel('c')}
+          </button>
+          <button type="button" className={`unit-toggle-btn${tempUnit === 'f' ? ' active' : ''}`} onClick={() => setTempUnit('f')}>
+            {tempLabel('f')}
+          </button>
+        </div>
       </div>
 
       {/* Split layout */}
       <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        {/* Left panel: checklist + plan fields */}
-        {!panelCollapsed && (
-          <div className="plan-left-panel" style={{
-            width: 320, flexShrink: 0, borderRight: '1px solid var(--border)',
-            overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 16,
-          }}>
-            <PlanChecklist
-              plan={plan}
-              carDriverId={carDriverId!}
-              onUpdate={handlePlanFieldChange}
-              refetchBoard={refetchBoard}
-            />
-
-            <div>
-              <h4 style={{ margin: '0 0 8px', fontSize: 13, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-                Qual Plan
-              </h4>
-              <PressureFields
-                values={plan.qual_plan}
-                onChange={(v) => handlePlanFieldChange({ qual_plan: v } as Partial<Plan>)}
+        {/* Left panel: checklist + toggle rail */}
+        <div style={{ display: 'flex', flexShrink: 0 }}>
+          {!panelCollapsed && (
+            <div className="plan-left-panel" style={{
+              width: 304, overflowY: 'auto', padding: 16,
+              display: 'flex', flexDirection: 'column', gap: 16,
+            }}>
+              <PlanChecklist
+                plan={plan}
+                carDriverId={carDriverId!}
+                onUpdate={handlePlanFieldChange}
+                refetchBoard={refetchBoard}
               />
             </div>
+          )}
+          <button
+            onClick={togglePanel}
+            title={panelCollapsed ? 'Open checklist' : 'Close checklist'}
+            style={{
+              width: 16, flexShrink: 0, padding: 0,
+              background: 'transparent', border: 'none', borderRight: '1px solid var(--border)',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--muted)', fontSize: 10, transition: 'background 0.15s',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >
+            {panelCollapsed ? '▸' : '◂'}
+          </button>
+        </div>
 
-            <div>
-              <h4 style={{ margin: '0 0 8px', fontSize: 13, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-                Race Plan
-              </h4>
-              <PressureFields
-                values={plan.race_plan}
-                onChange={(v) => handlePlanFieldChange({ race_plan: v } as Partial<Plan>)}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Right: board zones */}
+        {/* Right: board zones — analysis-first order */}
         <div className="plan-board" style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <PlanModeBar plan={plan} onChange={handlePlanFieldChange} />
-          <PlanDecisionCards plan={plan} sessions={sessions} onChange={handlePlanFieldChange} />
+          <PlanPlanHeader plan={plan} sessions={sessions} onChange={handlePlanFieldChange} pressureUnit={pressureUnit} tempUnit={tempUnit} />
           <PlanSessionTable
             plan={plan}
             sessions={sessions}
+            pressureUnit={pressureUnit}
             onAddSession={(sid: string) => {
               const newIds = [...(plan.session_ids || []), sid];
               handlePlanFieldChange({ session_ids: newIds } as Partial<Plan>);
@@ -243,57 +312,10 @@ export default function PlanPage() {
               handlePlanFieldChange({ session_ids: newIds } as Partial<Plan>);
             }}
           />
-          <PlanBleedLedger sessions={sessions} refetchBoard={refetchBoard} />
-          <PlanPressureCharts plan={plan} sessions={sessions} />
+          <PlanPressureCharts plan={plan} sessions={sessions} pressureUnit={pressureUnit} tempUnit={tempUnit} />
+          <PlanBleedLedger sessions={sessions} refetchBoard={refetchBoard} pressureUnit={pressureUnit} />
         </div>
       </div>
-    </div>
-  );
-}
-
-function PressureFields({ values, onChange }: {
-  values: PlanPressures;
-  onChange: (v: PlanPressures) => void;
-}) {
-  function set(corner: keyof PlanPressures, raw: string) {
-    const num = raw === '' ? null : parseFloat(raw);
-    onChange({ ...values, [corner]: isNaN(num as number) ? null : num });
-  }
-
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-      {(['fl', 'fr', 'rl', 'rr'] as const).map(c => (
-        <label key={c} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <span style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)' }}>{c}</span>
-          <input
-            className="input"
-            type="number"
-            step="0.1"
-            style={{ width: '100%' }}
-            value={values[c] ?? ''}
-            onChange={e => set(c, e.target.value)}
-          />
-        </label>
-      ))}
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Target</span>
-        <input
-          className="input"
-          type="number"
-          step="0.1"
-          style={{ width: '100%' }}
-          value={values.target ?? ''}
-          onChange={e => set('target', e.target.value)}
-        />
-      </label>
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 2, gridColumn: '1 / -1' }}>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Notes</span>
-        <input
-          className="input"
-          value={values.notes ?? ''}
-          onChange={e => onChange({ ...values, notes: e.target.value })}
-        />
-      </label>
     </div>
   );
 }

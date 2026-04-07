@@ -47,6 +47,7 @@ from LapForge.processing import (
     extract_reference_lap_from_session_blob,
     needs_reprocess as check_needs_reprocess,
     patch_pressure_summaries,
+    pressure_lap_band_summary,
     pressure_window_stats,
     process_session,
     process_session_incremental,
@@ -817,6 +818,18 @@ def create_app() -> Flask:
     def sessions_list():
         return _serve_spa()
 
+    @app.route("/plan")
+    def plan_list():
+        return _serve_spa()
+
+    @app.route("/plan/<weekend_id>")
+    def plan_redirect(weekend_id: str):
+        return _serve_spa()
+
+    @app.route("/plan/<weekend_id>/<car_driver_id>")
+    def plan_page(weekend_id: str, car_driver_id: str):
+        return _serve_spa()
+
     # ---- Upload ----
 
     def _upload_form_metadata(outing_meta: dict[str, str]) -> dict[str, str]:
@@ -1580,6 +1593,13 @@ def create_app() -> Flask:
         )
         return jsonify({"ok": True, "id": w.id, "weekend": w.to_dict()})
 
+    @app.route("/api/weekends/<wid>")
+    def api_weekends_get(wid: str):
+        w = store.get_weekend(wid)
+        if not w:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(w.to_dict())
+
     @app.route("/api/weekends/<wid>", methods=["PATCH"])
     def api_weekends_update(wid: str):
         w = store.get_weekend(wid)
@@ -1681,8 +1701,8 @@ def create_app() -> Flask:
             ro_fr = round(sess.roll_out_pressure_fr * BAR_TO_PSI, 2) if sess.roll_out_pressure_fr else None
             ro_rl = round(sess.roll_out_pressure_rl * BAR_TO_PSI, 2) if sess.roll_out_pressure_rl else None
             ro_rr = round(sess.roll_out_pressure_rr * BAR_TO_PSI, 2) if sess.roll_out_pressure_rr else None
-            qual_window_stats = None
-            race_window_stats = None
+            qual_lap_band = None
+            race_lap_band = None
             pd = sess.parsed_data
             if pd and isinstance(pd, dict):
                 full_times = pd.get("times") or []
@@ -1692,14 +1712,34 @@ def create_app() -> Flask:
                 eff_target = _session_target_psi(sess)
                 ql = plan.qual_lap_range or [2, 3]
                 rl = plan.race_stint_lap_range or [3, None]
+
+                qp = plan.qual_plan if isinstance(plan.qual_plan, dict) else {}
+                rp = plan.race_plan if isinstance(plan.race_plan, dict) else {}
+                q_acceptable = qp.get("acceptable_band_psi") or plan.pressure_band_psi or 0.5
+                q_optimal = qp.get("optimal_band_psi") or 0.25
+                r_acceptable = rp.get("acceptable_band_psi") or plan.pressure_band_psi or 0.5
+                r_optimal = rp.get("optimal_band_psi") or 0.25
+
                 if pcols and full_times:
-                    qual_window_stats = pressure_window_stats(
+                    qual_lap_band = pressure_lap_band_summary(
                         full_times, full_series, pcols, lap_splits,
-                        target_psi=eff_target, lap_start=ql[0], lap_end=ql[1],
+                        target_psi=eff_target,
+                        acceptable_psi=q_acceptable, optimal_psi=q_optimal,
+                        lap_start=ql[0], lap_end=ql[1],
+                        acceptable_upper=qp.get("acceptable_upper_psi"),
+                        acceptable_lower=qp.get("acceptable_lower_psi"),
+                        optimal_upper=qp.get("optimal_upper_psi"),
+                        optimal_lower=qp.get("optimal_lower_psi"),
                     )
-                    race_window_stats = pressure_window_stats(
+                    race_lap_band = pressure_lap_band_summary(
                         full_times, full_series, pcols, lap_splits,
-                        target_psi=eff_target, lap_start=rl[0], lap_end=rl[1],
+                        target_psi=eff_target,
+                        acceptable_psi=r_acceptable, optimal_psi=r_optimal,
+                        lap_start=rl[0], lap_end=rl[1],
+                        acceptable_upper=rp.get("acceptable_upper_psi"),
+                        acceptable_lower=rp.get("acceptable_lower_psi"),
+                        optimal_upper=rp.get("optimal_upper_psi"),
+                        optimal_lower=rp.get("optimal_lower_psi"),
                     )
             sessions_out.append({
                 "id": sess.id,
@@ -1713,8 +1753,8 @@ def create_app() -> Flask:
                 "bleed_events": sess.bleed_events,
                 "planning_tag": sess.planning_tag,
                 "tire_set_name": tire_set.name if tire_set else None,
-                "qual_window_stats": qual_window_stats,
-                "race_window_stats": race_window_stats,
+                "qual_lap_band": qual_lap_band,
+                "race_lap_band": race_lap_band,
             })
         return jsonify({
             "plan": plan.to_dict(),
