@@ -6,18 +6,14 @@
 
 ## Current state
 
-- **Version:** Stable line v1.6.9; pressure-plan betas through **v1.7.0-beta.3** (see Completed).
+- **Version:** Stable **v1.7.0**; beta line **v1.7.0-beta.4** (see Completed).
 - **Stack:** Electron + Flask (JSON API) + React/TypeScript SPA + SQLite.
-- **Tests:** 241 collected (pytest); overall coverage figure is maintained separately (historically ~53%).
-- **Phase 4b:** 26-item post-SPA plan largely executed; tire pressure planning on the v1.7 beta line.
+- **Tests:** 229 collected (pytest, excluding `e2e`); overall coverage figure is maintained separately (historically ~53%).
+- **Phase 4b:** 26-item post-SPA plan largely executed; tire pressure planning on the v1.7 beta line. Session detail dashboard TPMS unit handling fixed (see Recently completed).
 
 ---
 
 ## Open backlog
-
-### High priority
-
-*(none — previous high-priority upload cleanup is complete; see Recently completed.)*
 
 ### Medium priority
 
@@ -71,9 +67,41 @@
 
 ---
 
+#### 5. Cloud backup — move off personal Google Drive (explore)
+
+**Problem:** Cloud sync today uses the signed-in user’s personal Google Drive (`DriveClient` in `LapForge/sync/cloud_google.py`, OAuth + `engine.py`). That does not scale operationally or perception-wise as the product grows.
+
+**Goal:** Spike or short design pass: pick a direction for a **separate** backup/sync backend (not the developer’s personal Drive). Compare at least: (a) Google Workspace / Shared drive + dedicated OAuth client, (b) S3-compatible object storage (e.g. R2, S3, B2) with optional thin LapForge API for auth and signed uploads, (c) BaaS storage if vendor fit is acceptable. Define auth model (Google sign-in → your tokens vs provider-native), cost/egress, migration for existing `LapForgeBackup/` users, and what a `DriveClient`-shaped adapter would look like.
+
+**Deliverable:** Written recommendation (this doc or a short `environment/` note) plus rough effort estimate before implementation.
+
+**Key files:** `LapForge/sync/cloud_google.py`, `LapForge/sync/engine.py`, `LapForge/sync/secrets.py`, `LapForge/auth/oauth.py`, `LapForge/app.py` (sync routes), `frontend` sync/settings UI as needed.
+
+---
+
+#### 6. Tire sets, weekends, and plan integration (reassess linkage)
+
+**Problem:** Tire sets are largely scoped to **car / driver** (`car_driver_id` on `tire_sets`). A **weekend** (event) is the natural unit for “which rubber is on the car, at what cold/hot pressures, across practice → qual → race,” but that story is not first-class. Sessions link to a tire set id, and the **plan** ties sessions to a weekend, yet there is no clear, durable link that answers: *for this weekend and this car, which tire sets are in play and how do morning / roll-out / target pressures evolve?* The **Tire Sets** library and **Plan** board feel loosely coupled.
+
+**Goal:** Reassess the domain model and UX so tire inventory and pressures are **traceable per weekend (and car)** end-to-end, with a **clean interface** and **first-class integration into the plan** (not only session detail).
+
+**Scope (planning — not prescriptive):**
+- **Model:** Decide whether tire sets gain optional **`weekend_id`** (or a junction table weekend ↔ set ↔ car), whether “set instances” per weekend replace global sets for event use, and how legacy rows migrate.
+- **Pressures over time:** Define what is stored where (morning grid, roll-out per session, targets from plan vs session) so the plan can show a coherent timeline without duplicate sources of truth.
+- **API:** Extend or add routes so the plan page can list weekend-scoped sets, assign a set to sessions/checklist steps, and read/write the fields the UI needs.
+- **Plan UI:** Surfaces for picking/linking sets per weekend, seeing pressure context next to checklist / session slots, and quick navigation to set detail.
+- **Tire Sets page:** Clarify global library vs “in use this weekend”; filters or sections by weekend / car.
+- **Migration:** Backfill strategy for existing `tire_sets` and `sessions.tire_set_id` so nothing breaks mid-season.
+
+**Key files:** `LapForge/models.py` (`TireSet`, `Weekend`, `Plan`, `Session`), `LapForge/session_store.py`, `LapForge/app.py`, `frontend/src/pages/PlanPage.tsx` (and related plan components), `frontend/src/pages/TireSetsPage.tsx` (or equivalent), `frontend/src/types/models.ts`.
+
+**Deliverable:** Short design note (model + UI sketches + migration) before large implementation; then phased PRs (schema → API → plan → tire library).
+
+---
+
 ## Future phases
 
-### 5. Rust processing modules (napi-rs)
+### 7. Rust processing modules (napi-rs)
 
 Replace hot paths in the Python pipeline with Rust; same `process_session`-style interface; compare against fixtures. Later callable from Node after backend migration.
 
@@ -81,13 +109,27 @@ Replace hot paths in the Python pipeline with Rust; same `process_session`-style
 
 ---
 
-### 6. Node.js backend migration + drop Python
+### 8. Node.js backend migration + drop Python
 
 Express/Fastify, `better-sqlite3`, `googleapis`, `keytar` / `safeStorage`, Rust napi-rs in-process; remove PyInstaller; smaller installer.
 
 ---
 
 ## Recently completed
+
+### Session detail dashboard — TPMS pressure units (former high-priority #1)
+
+**What shipped:**
+
+1. **`dashboard_data` matches Plan telemetry normalization:** `_build_dashboard_data` in `LapForge/app.py` converts bar-labelled pressure channels to PSI and patches `channel_meta` to `unit: "psi"` for those series (same contract as `_build_session_dash_data` / `GET /api/sessions/<id>/telemetry`), so `ChartModule` does not apply a second bar→PSI conversion. Fixes inflated traces when session blobs disagreed with the Plan chart.
+
+2. **Parser:** Pi Toolbox headers `*tpms_press_* [psi]` are detected; canonical `tpms_press_*` rows store true bar, with `*_psi` companion columns where applicable (`LapForge/parsers/pi_toolbox_export.py`). `PIPELINE_VERSION` bumped so reprocess picks up parser changes.
+
+3. **Regression:** `tests/test_api.py::TestSessionAPI::test_dashboard_tpms_pressure_normalized_to_psi`; parser coverage in `tests/test_parser.py::TestLoadPiToolboxExport::test_tpms_psi_header_stores_bar_and_psi`.
+
+**Key files:** `LapForge/app.py`, `LapForge/parsers/pi_toolbox_export.py`, `LapForge/processing.py` (`PIPELINE_VERSION`), `tests/test_api.py`, `tests/test_parser.py`.
+
+---
 
 ### Upload file cleanup (former backlog #1)
 

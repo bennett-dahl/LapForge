@@ -455,12 +455,30 @@ def create_app() -> Flask:
 
         target_psi = _session_target_psi(session)
 
-        use_psi = True  # dashboard always receives psi-converted data
+        # Normalize pressure channels to PSI (same as _build_session_dash_data) so that
+        # ChartModule always sees a consistent unit regardless of what the stored blob
+        # contains.  This also fixes sessions stored before the parser corrected
+        # [psi]-labelled channels — the double-PSI values pass through this path intact
+        # (meta patched to "psi") so the frontend never applies a second conversion.
+        norm_series: dict[str, Any] = {}
+        norm_meta: dict[str, Any] = dict(channel_meta)
+        skip_cats = {"timing", "gps", "derived"}
+        for cname, vals in series.items():
+            cmeta = channel_meta.get(cname, {})
+            cat = cmeta.get("category", "unknown")
+            if cat in skip_cats:
+                continue
+            if cmeta.get("unit") == "bar" and cat == "pressure":
+                norm_series[cname] = [round(v * BAR_TO_PSI, 4) if v is not None else None for v in vals]
+                norm_meta[cname] = {**cmeta, "unit": "psi"}
+            else:
+                norm_series[cname] = vals
+
         raw_pres_chart = sd.get("raw_pressure_chart") or {}
         raw_pres_out: dict[str, Any] = {}
         for cname, vals in raw_pres_chart.items():
             cmeta = channel_meta.get(cname, {})
-            if use_psi and cmeta.get("unit") == "bar":
+            if cmeta.get("unit") == "bar":
                 raw_pres_out[cname] = [round(v * BAR_TO_PSI, 4) if v is not None else None for v in vals]
             else:
                 raw_pres_out[cname] = vals
@@ -468,8 +486,8 @@ def create_app() -> Flask:
         return {
             "times": times,
             "distances": distances,
-            "series": series,
-            "channel_meta": channel_meta,
+            "series": norm_series,
+            "channel_meta": norm_meta,
             "channels_by_category": cat_groups,
             "lap_splits": lap_splits,
             "lap_split_distances": lap_split_distances,

@@ -18,7 +18,7 @@ from LapForge.channels import categorize_channels, detect_channels
 # Constants (moved from app.py)
 # ---------------------------------------------------------------------------
 
-PIPELINE_VERSION: int = 7  # Bump when channel registry or pipeline logic changes
+PIPELINE_VERSION: int = 8  # Bump when channel registry or pipeline logic changes
 
 CHART_SMOOTH_WINDOW_S: float = 10.0
 CHART_SAMPLE_RATE_HZ: int = 50

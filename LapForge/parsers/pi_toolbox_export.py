@@ -7,7 +7,7 @@ Parses vehicle dynamics export files (e.g. 992 Cup TPMS data) from Pi Toolbox:
 - Parses {OutingInformation} metadata
 - Parses {ChannelBlock} tab-separated data with canonical column names
 - Lap detection from laptime resets
-- Pressure in bar with psi conversion (bar × 14.5038)
+- TPMS pressure: bar columns stored as bar; `[psi]` headers keep bar storage + *_psi (avoids double conversion)
 """
 
 from __future__ import annotations
@@ -31,6 +31,31 @@ def _canonical_name(raw: str) -> str:
     if bracket >= 0:
         s = s[:bracket].strip()
     return s
+
+
+def _bracket_unit_token(raw_header: str) -> str | None:
+    """Return lowercased unit text inside [...] if present, else None."""
+    s = raw_header.strip()
+    if s.startswith("*"):
+        s = s[1:]
+    lb = s.find("[")
+    if lb < 0:
+        return None
+    rb = s.find("]", lb)
+    if rb < 0:
+        return None
+    return s[lb + 1 : rb].strip().lower()
+
+
+def _tpms_press_header_is_psi(raw_header: str) -> bool:
+    """True if this column is TPMS pressure (not temp) and header declares PSI."""
+    base = _canonical_name(raw_header)
+    if "tpms_press" not in base.lower() or "temp" in base.lower():
+        return False
+    token = _bracket_unit_token(raw_header)
+    if not token:
+        return False
+    return token.startswith("psi")
 
 
 def _parse_float(value: str) -> float | None:
@@ -190,15 +215,38 @@ def load_pi_toolbox_export(
         header_line, data_lines, lap_reset_threshold=lap_reset_threshold
     )
 
-    # Identify pressure columns (bar) and add psi equivalents
-    pressure_cols = [c for c in columns if "tpms_press" in c.lower() and c in columns]
+    # Headers like *tpms_press_fl [psi] strip to canonical tpms_press_fl but values are PSI.
+    # Without this, we treat ~26 as bar and the UI multiplies again for PSI display (~377).
+    raw_headers = [h.strip() for h in header_line.split("\t")]
+    for raw_h in raw_headers:
+        if not _tpms_press_header_is_psi(raw_h):
+            continue
+        base = _canonical_name(raw_h)
+        for r in rows:
+            pv = r.get(base)
+            if pv is not None and not (isinstance(pv, float) and math.isnan(pv)):
+                fpv = float(pv)
+                r[f"{base}_psi"] = round(fpv, 4)
+                r[base] = round(fpv / BAR_TO_PSI, 4)
+            else:
+                r[f"{base}_psi"] = None
+
+    # TPMS pressure columns (bar storage in tpms_press_*); add *_psi if not already set
+    pressure_cols = [
+        c
+        for c in columns
+        if "tpms_press" in c.lower() and "temp" not in c.lower() and not c.lower().endswith("_psi")
+    ]
     for r in rows:
         for col in pressure_cols:
+            psi_key = col + "_psi"
             v = r.get(col)
+            if psi_key in r and r.get(psi_key) is not None:
+                continue
             if v is not None and not math.isnan(v):
-                r[col + "_psi"] = round(float(v) * BAR_TO_PSI, 4)
+                r[psi_key] = round(float(v) * BAR_TO_PSI, 4)
             else:
-                r[col + "_psi"] = None
+                r[psi_key] = None
 
     return {
         "metadata": metadata,

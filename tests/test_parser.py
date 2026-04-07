@@ -141,6 +141,23 @@ class TestLoadPiToolboxExport:
         psi_val = row["tpms_press_fl_psi"]
         assert psi_val == pytest.approx(bar_val * BAR_TO_PSI, rel=1e-3)
 
+    def test_tpms_psi_header_stores_bar_and_psi(self, tmp_path):
+        """[psi] in header must not leave PSI magnitudes under tpms_press_* (bar key)."""
+        f = tmp_path / "psi_tpms.txt"
+        f.write_text(
+            "PiToolboxVersionedASCIIDataSet\t1\n"
+            "{OutingInformation}\nDriverName\tX\n"
+            "{ChannelBlock}\n"
+            "*Time [s]\t*laptime [s]\t*tpms_press_fl [psi]\t*speed [km/h]\n"
+            "0.00\t0.00\t26.0\t0.0\n",
+            encoding="utf-8",
+        )
+        result = load_pi_toolbox_export(f)
+        row = result["rows"][0]
+        assert row["tpms_press_fl_psi"] == pytest.approx(26.0, rel=1e-3)
+        assert row["tpms_press_fl"] == pytest.approx(psi_to_bar(26.0), rel=1e-3)
+        assert row["tpms_press_fl"] == pytest.approx(26.0 / BAR_TO_PSI, rel=1e-3)
+
     def test_invalid_file_raises(self, tmp_path):
         bad_file = tmp_path / "bad.txt"
         bad_file.write_text("This is not a Pi Toolbox file")

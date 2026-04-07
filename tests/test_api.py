@@ -237,6 +237,36 @@ class TestSessionAPI:
         assert "car_driver" in data
         assert data["is_v2"] is True
 
+    def test_dashboard_tpms_pressure_normalized_to_psi(self, loaded_client):
+        """dashboard_data normalises pressure channels to PSI so ChartModule never
+        double-converts.  Assertions verify both series and raw_pressure_series are
+        in PSI range and channel_meta reports unit 'psi'."""
+        from LapForge.processing import BAR_TO_PSI
+        client, _, _, session = loaded_client
+        resp = client.get(f"/api/sessions/{session.id}/detail")
+        assert resp.status_code == 200
+        dd = resp.get_json().get("dashboard_data") or {}
+        raw_ps = dd.get("raw_pressure_series") or {}
+        meta = dd.get("channel_meta") or {}
+        series = dd.get("series") or {}
+
+        for ch in ("tpms_press_fl", "tpms_press_fr", "tpms_press_rl", "tpms_press_rr"):
+            if ch not in raw_ps:
+                continue
+            # meta must be patched to psi so ChartModule does no extra conversion
+            assert meta[ch]["unit"] == "psi", f"{ch} meta unit should be psi after normalisation"
+            raw_vals = [v for v in raw_ps[ch] if v is not None]
+            series_vals = [v for v in series[ch] if v is not None]
+            assert raw_vals, f"{ch} raw_pressure_series is empty"
+            # Fixture TPMS is ~1.8 bar → ~26 PSI; anything > 5 bar is clearly not bar
+            assert max(raw_vals) > 5.0, (
+                f"{ch} raw_pressure_series max={max(raw_vals):.2f} — expected PSI range"
+            )
+            # series and raw_pressure_series should be in the same unit (PSI)
+            assert abs(raw_vals[0] - series_vals[0]) < 2.0, (
+                f"{ch} raw vs series differ by more than rounding — units likely differ"
+            )
+
     def test_session_detail_not_found(self, client):
         resp = client.get("/api/sessions/nonexistent/detail")
         assert resp.status_code == 404
