@@ -63,16 +63,37 @@ export default function PlanPage() {
   // Using a derived value avoids the race where carDrivers resolves before weekendPlans,
   // causing needsCreate=true+currentCar=truthy to flash the "Create Plan" screen.
   const needsCreate = plansStatus !== 'pending' && !currentPlan && !!carDriverId;
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   async function handleCreatePlan() {
     if (!carDriverId || !weekendId) return;
+    setCreateError(null);
+    setCreating(true);
     try {
-      await apiPost<PlanCreateResponse>('/api/plans', {
+      const res = await apiPost<PlanCreateResponse>('/api/plans', {
         car_driver_id: carDriverId,
         weekend_id: weekendId,
       });
+      qc.setQueryData<(Plan & { car_driver_display?: string })[]>(
+        ['weekend-plans', weekendId],
+        old => {
+          if (!old) return [res.plan];
+          if (old.some(p => p.id === res.plan.id)) return old;
+          return [...old, res.plan];
+        },
+      );
       qc.invalidateQueries({ queryKey: ['weekend-plans', weekendId] });
-    } catch {}
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('already exists')) {
+        qc.invalidateQueries({ queryKey: ['weekend-plans', weekendId] });
+      } else {
+        setCreateError(msg || 'Failed to create plan');
+      }
+    } finally {
+      setCreating(false);
+    }
   }
 
   const { data: boardData, refetch: refetchBoard } = useQuery({
@@ -179,7 +200,12 @@ export default function PlanPage() {
           <p className="text-muted" style={{ margin: '0 0 16px' }}>
             at {weekend?.name || 'this weekend'}
           </p>
-          <Button onClick={handleCreatePlan}>Create Plan</Button>
+          <Button onClick={handleCreatePlan} disabled={creating}>
+            {creating ? 'Creating...' : 'Create Plan'}
+          </Button>
+          {createError && (
+            <p style={{ color: 'var(--danger)', fontSize: 13, margin: '8px 0 0' }}>{createError}</p>
+          )}
         </div>
       </div>
     );

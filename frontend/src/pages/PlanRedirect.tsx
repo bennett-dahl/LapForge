@@ -1,26 +1,29 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../api/client';
 import type { CarDriver, Plan } from '../types/models';
 import type { PlanCreateResponse } from '../types/api';
 import Button from '../components/ui/Button';
-import { useState } from 'react';
 
 export default function PlanRedirect() {
   const { weekendId } = useParams<{ weekendId: string }>();
   const navigate = useNavigate();
+  const qc = useQueryClient();
 
-  const { data: plans = [] } = useQuery({
+  const { data: plans, isPending: plansPending } = useQuery({
     queryKey: ['weekend-plans', weekendId],
     queryFn: () => apiGet<(Plan & { car_driver_display?: string })[]>(`/api/weekends/${weekendId}/plans`),
     enabled: !!weekendId,
   });
 
-  const { data: carDrivers = [] } = useQuery({
+  const { data: carDrivers, isPending: carDriversPending } = useQuery({
     queryKey: ['car-drivers'],
     queryFn: () => apiGet<CarDriver[]>('/api/car-drivers'),
   });
+
+  const plansLoaded = plans ?? [];
+  const carsLoaded = carDrivers ?? [];
 
   const lastCarId = localStorage.getItem('plan_last_car_driver_id');
 
@@ -42,47 +45,86 @@ export default function PlanRedirect() {
   const [newCar, setNewCar] = useState('');
   const [newDriver, setNewDriver] = useState('');
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function createCarAndPlan() {
     if (!newCar.trim() || !newDriver.trim() || !weekendId) return;
     setCreating(true);
+    setError(null);
     try {
       const cdRes = await apiPost<{ ok: boolean; car_driver: CarDriver }>('/api/car-drivers', {
         car_identifier: newCar.trim(),
         driver_name: newDriver.trim(),
       });
-      await apiPost<PlanCreateResponse>('/api/plans', {
+      const planRes = await apiPost<PlanCreateResponse>('/api/plans', {
         car_driver_id: cdRes.car_driver.id,
         weekend_id: weekendId,
       });
+      qc.setQueryData<(Plan & { car_driver_display?: string })[]>(
+        ['weekend-plans', weekendId],
+        old => {
+          if (!old) return [planRes.plan];
+          if (old.some(p => p.id === planRes.plan.id)) return old;
+          return [...old, planRes.plan];
+        },
+      );
+      qc.invalidateQueries({ queryKey: ['car-drivers'] });
+      qc.invalidateQueries({ queryKey: ['weekend-plans', weekendId] });
       navigate(`/plan/${weekendId}/${cdRes.car_driver.id}`, { replace: true });
-    } catch {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Something went wrong';
+      setError(msg);
       setCreating(false);
     }
   }
 
   async function createPlanForCar(carDriverId: string) {
     if (!weekendId) return;
+    setError(null);
     try {
-      await apiPost<PlanCreateResponse>('/api/plans', {
+      const res = await apiPost<PlanCreateResponse>('/api/plans', {
         car_driver_id: carDriverId,
         weekend_id: weekendId,
       });
+      qc.setQueryData<(Plan & { car_driver_display?: string })[]>(
+        ['weekend-plans', weekendId],
+        old => {
+          if (!old) return [res.plan];
+          if (old.some(p => p.id === res.plan.id)) return old;
+          return [...old, res.plan];
+        },
+      );
+      qc.invalidateQueries({ queryKey: ['weekend-plans', weekendId] });
       navigate(`/plan/${weekendId}/${carDriverId}`, { replace: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '';
       if (msg.includes('already exists')) {
+        qc.invalidateQueries({ queryKey: ['weekend-plans', weekendId] });
         navigate(`/plan/${weekendId}/${carDriverId}`, { replace: true });
+      } else {
+        setError(msg || 'Failed to create plan');
       }
     }
   }
 
-  if (plans && plans.length > 1) {
+  const errorBanner = error && (
+    <p style={{ color: 'var(--danger)', fontSize: 13, marginTop: 8 }}>{error}</p>
+  );
+
+  if (plansPending || carDriversPending) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center' }}>
+        <span className="text-muted">Loading...</span>
+      </div>
+    );
+  }
+
+  if (plansLoaded.length > 1) {
     return (
       <div className="page-plan-redirect" style={{ maxWidth: 600, margin: '40px auto' }}>
         <h2>Select a car to plan for</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
-          {plans.map(p => (
+          {plansLoaded.map(p => (
             <button
               key={p.id}
               className="card"
@@ -96,10 +138,10 @@ export default function PlanRedirect() {
             </button>
           ))}
         </div>
-        {carDrivers.filter(cd => !plans.some(p => p.car_driver_id === cd.id)).length > 0 && (
+        {carsLoaded.filter(cd => !plansLoaded.some(p => p.car_driver_id === cd.id)).length > 0 && (
           <div style={{ marginTop: 24 }}>
             <h3 className="text-muted">Start planning for another car?</h3>
-            {carDrivers.filter(cd => !plans.some(p => p.car_driver_id === cd.id)).map(cd => (
+            {carsLoaded.filter(cd => !plansLoaded.some(p => p.car_driver_id === cd.id)).map(cd => (
               <Button key={cd.id} variant="secondary" size="sm" style={{ marginRight: 8, marginTop: 4 }}
                 onClick={() => createPlanForCar(cd.id)}>
                 + {cd.car_identifier} / {cd.driver_name}
@@ -107,11 +149,12 @@ export default function PlanRedirect() {
             ))}
           </div>
         )}
+        {errorBanner}
       </div>
     );
   }
 
-  if (carDrivers.length === 0) {
+  if (carsLoaded.length === 0) {
     return (
       <div className="page-plan-redirect" style={{ maxWidth: 500, margin: '40px auto' }}>
         <div className="card" style={{ padding: 24 }}>
@@ -125,22 +168,24 @@ export default function PlanRedirect() {
           <Button onClick={createCarAndPlan} disabled={!newCar.trim() || !newDriver.trim() || creating}>
             {creating ? 'Creating...' : 'Create & Start Planning'}
           </Button>
+          {errorBanner}
         </div>
       </div>
     );
   }
 
-  if (plans && plans.length === 0 && carDrivers.length > 0) {
+  if (plansLoaded.length === 0 && carsLoaded.length > 0) {
     return (
       <div className="page-plan-redirect" style={{ maxWidth: 500, margin: '40px auto' }}>
         <h2>Start planning for a car</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
-          {carDrivers.map(cd => (
+          {carsLoaded.map(cd => (
             <Button key={cd.id} variant="secondary" onClick={() => createPlanForCar(cd.id)}>
               Start planning for {cd.car_identifier} / {cd.driver_name}
             </Button>
           ))}
         </div>
+        {errorBanner}
       </div>
     );
   }

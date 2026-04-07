@@ -1,13 +1,22 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client';
 import type { CarDriver } from '../types/models';
 import type { CarDriverCreateResponse } from '../types/api';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
 
+function isValidReturnPath(p: string): boolean {
+  return p.startsWith('/plan/') && !p.includes('..') && !p.includes('://');
+}
+
 export default function CarDriversPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const returnPath = searchParams.get('return');
+  const validReturn = returnPath && isValidReturnPath(returnPath) ? returnPath : null;
 
   useEffect(() => {
     document.title = 'LapForge - Car & Drivers';
@@ -24,7 +33,13 @@ export default function CarDriversPage() {
   const createMut = useMutation({
     mutationFn: (data: { car_identifier: string; driver_name: string }) =>
       apiPost<CarDriverCreateResponse>('/api/car-drivers', data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['car-drivers'] }); closeModal(); },
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['car-drivers'] });
+      closeModal();
+      if (validReturn) {
+        navigate(`${validReturn}/${res.car_driver.id}`);
+      }
+    },
   });
 
   const updateMut = useMutation({
@@ -71,6 +86,17 @@ export default function CarDriversPage() {
         <Button onClick={openCreate}>+ Add</Button>
       </div>
 
+      {validReturn && (
+        <div style={{
+          padding: '8px 12px', marginBottom: 16, borderRadius: 6,
+          background: 'var(--surface)', border: '1px solid var(--border)', fontSize: 13,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <span>Select a car/driver for this weekend, or create a new one.</span>
+          <Button variant="ghost" size="sm" onClick={() => navigate(validReturn)}>Cancel</Button>
+        </div>
+      )}
+
       {isLoading ? (
         <p className="muted">Loading...</p>
       ) : carDrivers.length === 0 ? (
@@ -86,6 +112,11 @@ export default function CarDriversPage() {
                 <td>{cd.car_identifier}</td>
                 <td>{cd.driver_name}</td>
                 <td className="actions">
+                  {validReturn && (
+                    <Button variant="primary" size="sm" onClick={() => navigate(`${validReturn}/${cd.id}`)}>
+                      Select
+                    </Button>
+                  )}
                   <Button variant="ghost" size="sm" onClick={() => openEdit(cd)}>Edit</Button>
                   <Button variant="danger" size="sm" onClick={() => {
                     if (confirm(`Delete ${cd.car_identifier} / ${cd.driver_name}?`))
