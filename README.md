@@ -41,48 +41,46 @@ A convenience script that builds the frontend SPA and (re)starts the Flask devel
 
 The script automatically kills any existing process listening on the target port before starting, so you don't need to manually stop the server first.
 
-## Releases
+## Deploying
 
-### Stable channel
+Use the `/deploy` agent skill to ship a release. It will verify your branch, check for uncommitted work, bump the version, tag, and push — triggering the GitHub Actions pipeline automatically.
 
-Push a tag matching `v*` from `main` (e.g. `v1.7.0`). GitHub Actions runs `build.yml`, which:
+```
+/deploy
+```
 
-1. Runs tests
-2. Builds the React SPA
-3. Freezes the Python backend with PyInstaller
-4. Packages everything into an NSIS installer via electron-builder
-5. Publishes a full **GitHub Release**
+Releases are entirely tag-driven. Pushing the right tag to the right branch is all that is needed to start a build.
 
-Installed users receive the update automatically via `electron-updater`.
+### Channels
 
-### Beta channel
+| Channel | Branch | Tag pattern | Example | Pipeline |
+|---------|--------|-------------|---------|----------|
+| Stable  | `main` | `v<major>.<minor>.<patch>` | `v1.7.0` | `build.yml` |
+| Beta    | `beta` | `v<major>.<minor>.<patch>-beta.<n>` | `v2.0.0-beta.1` | `build-beta.yml` |
 
-Push a tag matching `v*-beta*` from the `beta` branch (e.g. `v2.0.0-beta.1`). GitHub Actions runs `build-beta.yml`, which runs the same steps but additionally:
+### What the pipeline does
 
-- Patches `electron/package.json` at build time: sets `appId` to `com.lapforge.beta`, `productName` to `LapForge Beta`, and `releaseType` to `prerelease`
-- Renames the backend executable to `LapForgeBeta.exe`
-- Publishes a **GitHub Pre-release**
+Both pipelines:
 
-The beta app installs alongside the stable app with its own Start Menu shortcut and a completely separate data directory (`%APPDATA%\LapForge Beta`), so the two versions never share or corrupt each other's databases.
+1. Run unit and integration tests (≥50% coverage required)
+2. Build the React SPA
+3. Freeze the Python backend with PyInstaller
+4. Package an NSIS installer via electron-builder
+5. Publish a GitHub Release (stable) or Pre-release (beta)
 
-Beta users receive updates automatically within the beta channel (pre-releases only). Stable users never see beta builds.
+Beta additionally patches `electron/package.json` at build time to set `appId → com.lapforge.beta`, `productName → LapForge Beta`, and renames the backend executable to `LapForgeBeta.exe`. The beta app installs alongside stable with a separate data directory (`%APPDATA%\LapForge Beta`).
 
-### Version numbering
+Installed users receive updates automatically via `electron-updater` within their respective channel.
 
-| Channel | Tag pattern | Example |
-|---------|------------|---------|
-| Stable | `v<major>.<minor>.<patch>` | `v1.7.0` |
-| Beta | `v<major>.<minor>.<patch>-beta.<n>` | `v2.0.0-beta.1` |
-
-### Typical release workflow
+### Manual release (without the skill)
 
 ```powershell
-# Stable release
+# Stable — update electron/package.json version first, then:
 git checkout main
 git tag v1.7.0
 git push origin main --tags
 
-# Beta release (from the beta branch)
+# Beta — CI patches electron/package.json from the tag, so no file change needed:
 git checkout beta
 git tag v2.0.0-beta.1
 git push origin beta --tags

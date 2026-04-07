@@ -109,6 +109,7 @@ class Session:
     bleed_events: list[dict[str, Any]] = field(default_factory=list)
     file_path: str | None = None
     parsed_data: dict[str, Any] | None = None
+    created_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -134,6 +135,7 @@ class Session:
             "bleed_events": list(self.bleed_events),
             "file_path": self.file_path,
             "parsed_data": self.parsed_data,
+            "created_at": self.created_at,
         }
 
     @classmethod
@@ -168,6 +170,7 @@ class Session:
             bleed_events=bleed if isinstance(bleed, list) else [],
             file_path=d.get("file_path"),
             parsed_data=d.get("parsed_data"),
+            created_at=str(d.get("created_at", "")),
         )
 
 

@@ -1,0 +1,28 @@
+---
+description: LapForge git branch policy — default to beta; require explicit intent on main before editing.
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# Branch workflow (LapForge)
+
+## Default branch for implementation
+
+- **Assume day-to-day product work happens on `beta`.** When starting implementation, refactoring, or feature work, prefer **`beta`** as the working branch unless the user has said otherwise.
+
+## `main` is protected for routine edits
+
+- **Before changing application code, tests, or build config** (anything under `LapForge/`, `frontend/`, `electron/`, `tests/`, `.github/`, etc.), check the current git branch (e.g. `git branch --show-current` or ask the user).
+
+- If the branch is **`main`**:
+  1. **Stop** and **warn** the user clearly: routine development should use **`beta`**; `main` is for releases and hotfixes aligned with stable tags.
+  2. **Do not proceed** with edits until the user **explicitly confirms** they intend to work on `main` (e.g. “yes, I’m doing a stable release / hotfix on main”).
+  3. If they are not sure, suggest: `git checkout beta` (and merge or rebase from `main` if needed).
+
+- **Docs-only** changes under `environment/` or small README tweaks may be acceptable on `main` if the user explicitly asked for a main-only doc update; when in doubt, ask.
+
+## Releases
+
+- **Stable tags** (`v1.x.y` without prerelease suffix) are cut from **`main`** with a clean tree and `electron/package.json` version aligned to the tag.
+- **Beta tags** (`v*-beta*`) should be created from the **`beta`** branch after it is **rebased or merged with `main`**, so beta CI builds the intended commit line. See `.cursor/skills/deploy/SKILL.md`.

@@ -57,6 +57,7 @@ export interface Session {
   bleed_events: BleedEvent[];
   file_path: string | null;
   parsed_data: Record<string, unknown> | null;
+  created_at: string;
 }
 
 export interface Weekend {

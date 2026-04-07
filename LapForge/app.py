@@ -993,6 +993,16 @@ def create_app() -> Flask:
     def session_delete(id: str):
         session = store.get_session(id)
         car_driver_id = session.car_driver_id if session else None
+        if session:
+            resolved = store.resolve_file_path(session.file_path)
+            if resolved:
+                try:
+                    canon = resolved.resolve()
+                    uploads_canon = store.uploads_dir.resolve()
+                    if canon.is_file() and canon.is_relative_to(uploads_canon):
+                        canon.unlink()
+                except OSError:
+                    log.warning("Failed to delete upload file %s for session %s", resolved, id, exc_info=True)
         store.delete_session(id)
         return redirect(url_for("sessions_list", car_driver_id=car_driver_id))
 
@@ -2098,6 +2108,7 @@ def create_app() -> Flask:
                 "ambient_temp_c": s.ambient_temp_c,
                 "track_temp_c": s.track_temp_c,
                 "lap_count": lap_count,
+                "created_at": s.created_at,
             })
         return jsonify({
             "sessions": out,
@@ -2109,6 +2120,16 @@ def create_app() -> Flask:
         s = store.get_session(sid)
         if not s:
             return jsonify({"error": "Not found"}), 404
+        # Delete upload file if it exists and is safely under uploads_dir
+        resolved = store.resolve_file_path(s.file_path)
+        if resolved:
+            try:
+                canon = resolved.resolve()
+                uploads_canon = store.uploads_dir.resolve()
+                if canon.is_file() and canon.is_relative_to(uploads_canon):
+                    canon.unlink()
+            except OSError:
+                log.warning("Failed to delete upload file %s for session %s", resolved, sid, exc_info=True)
         affected_plans = store.delete_session(sid)
         return jsonify({"ok": True, "affected_plans": affected_plans})
 
@@ -2207,6 +2228,11 @@ def create_app() -> Flask:
         PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
         PREFERENCES_PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
         return jsonify({"ok": True})
+
+    @app.route("/api/maintenance/cleanup-uploads", methods=["POST"])
+    def api_cleanup_uploads():
+        removed = store.cleanup_orphan_uploads()
+        return jsonify({"ok": True, "removed": removed, "count": len(removed)})
 
     # ---- Auth user API (for SPA) ----
 

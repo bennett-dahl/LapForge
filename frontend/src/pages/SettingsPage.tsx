@@ -104,6 +104,8 @@ export default function SettingsPage() {
   const [backupRestorePath, setBackupRestorePath] = useState('');
   const [backupMessage, setBackupMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupMessage, setCleanupMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   async function handleBackupExport() {
     setBackupBusy(true);
@@ -140,6 +142,39 @@ export default function SettingsPage() {
         text: err instanceof Error ? err.message : String(err),
       });
       setBackupBusy(false);
+    }
+  }
+
+  async function handleCleanupOrphanUploads() {
+    if (
+      !confirm(
+        'Remove files in the uploads folder that are not linked to any session? This cannot be undone. Session delete already removes linked files.',
+      )
+    ) {
+      return;
+    }
+    setCleanupBusy(true);
+    setCleanupMessage(null);
+    try {
+      const r = await apiPost<{ ok: boolean; removed: string[]; count: number }>(
+        '/api/maintenance/cleanup-uploads',
+      );
+      const n = r.count ?? (r.removed?.length ?? 0);
+      const names = r.removed?.length ? r.removed.join(', ') : '';
+      setCleanupMessage({
+        kind: 'ok',
+        text:
+          n === 0
+            ? 'No orphaned upload files found.'
+            : `Removed ${n} file(s)${names ? `: ${names}` : ''}.`,
+      });
+    } catch (err) {
+      setCleanupMessage({
+        kind: 'err',
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setCleanupBusy(false);
     }
   }
 
@@ -349,6 +384,21 @@ export default function SettingsPage() {
             {backupMessage && (
               <p className="muted" style={{ marginTop: '0.75rem', color: backupMessage.kind === 'err' ? '#f87171' : undefined }}>
                 {backupMessage.text}
+              </p>
+            )}
+
+            <h2 style={{ fontSize: '1rem', marginTop: '1.75rem' }}>Upload maintenance</h2>
+            <p className="muted">
+              Deletes stray files under <code className="data-path">uploads/</code> that no session references. Does not remove files still tied to a session.
+            </p>
+            <div className="form-actions">
+              <Button type="button" variant="secondary" disabled={cleanupBusy || backupBusy} onClick={handleCleanupOrphanUploads}>
+                Remove orphaned upload files
+              </Button>
+            </div>
+            {cleanupMessage && (
+              <p className="muted" style={{ marginTop: '0.75rem', color: cleanupMessage.kind === 'err' ? '#f87171' : undefined }}>
+                {cleanupMessage.text}
               </p>
             )}
           </div>

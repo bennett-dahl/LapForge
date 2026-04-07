@@ -198,6 +198,8 @@ class SessionStore:
                 c.execute("ALTER TABLE sessions ADD COLUMN planning_tag TEXT")
             if "bleed_events_json" not in cols:
                 c.execute("ALTER TABLE sessions ADD COLUMN bleed_events_json TEXT")
+            if "created_at" not in cols:
+                c.execute("ALTER TABLE sessions ADD COLUMN created_at TEXT DEFAULT ''")
 
             # Migrate old weekends schema (had car_driver_id + session_ids_json) to event-level
             wk_cols = {
@@ -421,13 +423,15 @@ class SessionStore:
         parsed_json = json.dumps(session.parsed_data, default=str) if session.parsed_data else None
         summary_json = self._extract_summary_json(session.parsed_data)
         bleed_json = json.dumps(session.bleed_events) if session.bleed_events else None
+        if not session.created_at:
+            session.created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         with self._conn() as c:
             c.execute(
                 """INSERT INTO sessions (id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                    ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
                    target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
-                   file_path, parsed_data_json, session_summary_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   file_path, parsed_data_json, session_summary_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session.id,
                     session.car_driver_id,
@@ -452,6 +456,7 @@ class SessionStore:
                     session.file_path,
                     parsed_json,
                     summary_json,
+                    session.created_at,
                 ),
             )
         return session
@@ -499,7 +504,7 @@ class SessionStore:
                 """SELECT id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                    ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
                    target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
-                   file_path, parsed_data_json FROM sessions WHERE id = ?""",
+                   file_path, parsed_data_json, created_at FROM sessions WHERE id = ?""",
                 (id,),
             ).fetchone()
         if not row:
@@ -539,6 +544,7 @@ class SessionStore:
             bleed_events=bleed_events,
             file_path=row[20],
             parsed_data=parsed,
+            created_at=row[22] or "",
         )
 
     def list_sessions(self, car_driver_id: str | None = None) -> list[Session]:
@@ -549,7 +555,7 @@ class SessionStore:
                     """SELECT id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                        ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
                        target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
-                       file_path, session_summary_json FROM sessions WHERE car_driver_id = ? ORDER BY track, session_type""",
+                       file_path, session_summary_json, created_at FROM sessions WHERE car_driver_id = ? ORDER BY track, session_type""",
                     (car_driver_id,),
                 ).fetchall()
             else:
@@ -557,7 +563,7 @@ class SessionStore:
                     """SELECT id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                        ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
                        target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
-                       file_path, session_summary_json FROM sessions ORDER BY car_driver_id, track, session_type"""
+                       file_path, session_summary_json, created_at FROM sessions ORDER BY car_driver_id, track, session_type"""
                 ).fetchall()
         out = []
         for row in rows:
@@ -597,9 +603,46 @@ class SessionStore:
                     bleed_events=bleed_events,
                     file_path=row[20],
                     parsed_data={"summary": summary} if summary else None,
+                    created_at=row[22] or "",
                 )
             )
         return out
+
+    def cleanup_orphan_uploads(self) -> list[str]:
+        """Delete upload files not referenced by any session. Returns list of removed filenames."""
+        if not self.uploads_dir.is_dir():
+            return []
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT file_path FROM sessions WHERE file_path IS NOT NULL"
+            ).fetchall()
+        referenced: set[str] = set()
+        for (fp,) in rows:
+            if fp:
+                p = Path(fp)
+                resolved = (self.data_root / fp) if not p.is_absolute() else p
+                try:
+                    referenced.add(str(resolved.resolve()))
+                except OSError:
+                    pass
+        removed: list[str] = []
+        uploads_canon = self.uploads_dir.resolve()
+        for child in self.uploads_dir.iterdir():
+            if not child.is_file():
+                continue
+            try:
+                canon = child.resolve()
+                if not canon.is_relative_to(uploads_canon):
+                    continue
+            except OSError:
+                continue
+            if str(canon) not in referenced:
+                try:
+                    child.unlink()
+                    removed.append(child.name)
+                except OSError:
+                    log.warning("Failed to remove orphan upload %s", child, exc_info=True)
+        return removed
 
     def delete_session(self, id: str) -> list[dict[str, str]]:
         """Delete session and clean up plan references. Returns affected plan ids."""

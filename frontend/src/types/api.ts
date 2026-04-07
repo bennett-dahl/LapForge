@@ -68,6 +68,7 @@ export interface SessionSummary {
   ambient_temp_c: number | null;
   track_temp_c: number | null;
   lap_count: number;
+  created_at: string;
 }
 
 // Session Detail

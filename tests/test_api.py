@@ -335,6 +335,14 @@ class TestSessionAPI:
         assert resp.status_code == 200
         assert store.get_session(session.id) is None
 
+    def test_session_delete_removes_upload_file(self, loaded_client):
+        client, store, _, session = loaded_client
+        upload_path = store.uploads_dir / f"{session.id}.txt"
+        assert upload_path.exists(), "upload file should exist before delete"
+        resp = client.delete(f"/api/sessions/{session.id}")
+        assert resp.status_code == 200
+        assert not upload_path.exists(), "upload file should be removed after session delete"
+
     def test_session_delete_not_found(self, client):
         resp = client.delete("/api/sessions/nonexistent")
         assert resp.status_code == 404
@@ -350,9 +358,32 @@ class TestSessionAPI:
 
     def test_legacy_delete_route(self, loaded_client):
         client, store, _, session = loaded_client
+        upload_path = store.uploads_dir / f"{session.id}.txt"
+        assert upload_path.exists()
         resp = client.post(f"/sessions/{session.id}/delete", follow_redirects=True)
         assert resp.status_code == 200
         assert store.get_session(session.id) is None
+        assert not upload_path.exists(), "legacy delete should also clean up upload file"
+
+
+# ---------------------------------------------------------------------------
+# Maintenance API
+# ---------------------------------------------------------------------------
+
+class TestMaintenanceAPI:
+    def test_cleanup_orphan_uploads(self, loaded_client):
+        client, store, _, session = loaded_client
+        # Create an orphan file alongside the session's real upload
+        orphan = store.uploads_dir / "orphan_file.txt"
+        orphan.write_text("stale data")
+        resp = client.post("/api/maintenance/cleanup-uploads")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert "orphan_file.txt" in data["removed"]
+        assert not orphan.exists()
+        # The session's upload should still exist
+        assert (store.uploads_dir / f"{session.id}.txt").exists()
 
 
 # ---------------------------------------------------------------------------

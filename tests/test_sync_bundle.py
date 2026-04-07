@@ -115,6 +115,34 @@ class TestBuildAndRestoreBundle:
         assert len(progress) > 0
         assert progress[-1][0] == 100
 
+    def test_round_trip_after_orphan_cleanup(self, tmp_data_root, store, tmp_path):
+        """Backup/restore works when uploads only contains referenced files (post-cleanup)."""
+        from LapForge.models import Session, SessionType
+        import uuid as _uuid
+        cd = store.add_car_driver("911", "Alice")
+        sid = str(_uuid.uuid4())
+        (store.uploads_dir / f"{sid}.txt").write_text("export data")
+        s = Session(id=sid, car_driver_id=cd.id, session_type=SessionType.PRACTICE_1,
+                    track="T", driver="D", car="C", outing_number="1", session_number="1",
+                    file_path=f"uploads/{sid}.txt")
+        store.add_session(s)
+        # Orphan that would have been cleaned up
+        (store.uploads_dir / "orphan.txt").write_text("stale")
+        store.cleanup_orphan_uploads()
+        assert not (store.uploads_dir / "orphan.txt").exists()
+
+        bundle_path = tmp_path / "backup.zip"
+        build_bundle(tmp_data_root, "device-1", dest=bundle_path)
+        manifest = read_bundle_manifest(bundle_path)
+        assert f"uploads/{sid}.txt" in manifest["uploads"]
+        assert "uploads/orphan.txt" not in manifest["uploads"]
+
+        restore_root = tmp_path / "restored"
+        restore_root.mkdir()
+        restore_bundle(bundle_path, restore_root)
+        assert (restore_root / "uploads" / f"{sid}.txt").exists()
+        assert not (restore_root / "uploads" / "orphan.txt").exists()
+
     def test_restore_progress(self, populated_data_root, tmp_path):
         bundle_path = tmp_path / "backup.zip"
         build_bundle(populated_data_root, "device-1", dest=bundle_path)

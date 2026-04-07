@@ -128,6 +128,19 @@ class TestSessionCRUD:
         assert got.track == "Laguna Seca"
         assert got.session_type is SessionType.PRACTICE_1
 
+    def test_created_at_auto_set(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        s = self._make_session(store, cd.id)
+        got = store.get_session(s.id)
+        assert got.created_at, "created_at should be set automatically"
+        assert "T" in got.created_at, "created_at should be ISO format"
+
+    def test_created_at_in_list(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        s = self._make_session(store, cd.id)
+        sessions = store.list_sessions()
+        assert sessions[0].created_at == store.get_session(s.id).created_at
+
     def test_with_parsed_data(self, store, sample_parsed):
         from LapForge.processing import process_session, sanitize_for_json
         cd = store.add_car_driver("911", "Alice")
@@ -169,6 +182,25 @@ class TestSessionCRUD:
         s = self._make_session(store, cd.id)
         store.delete_session(s.id)
         assert store.get_session(s.id) is None
+
+    def test_cleanup_orphan_uploads(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        s = self._make_session(store, cd.id, file_path="uploads/keep.txt")
+        # Create referenced and orphaned files
+        (store.uploads_dir / "keep.txt").write_text("data")
+        (store.uploads_dir / "orphan.txt").write_text("stale")
+        removed = store.cleanup_orphan_uploads()
+        assert "orphan.txt" in removed
+        assert (store.uploads_dir / "keep.txt").exists()
+        assert not (store.uploads_dir / "orphan.txt").exists()
+
+    def test_cleanup_no_orphans(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        s = self._make_session(store, cd.id, file_path="uploads/valid.txt")
+        (store.uploads_dir / "valid.txt").write_text("data")
+        removed = store.cleanup_orphan_uploads()
+        assert removed == []
+        assert (store.uploads_dir / "valid.txt").exists()
 
     def test_delete_cleans_plan_refs(self, store):
         cd = store.add_car_driver("911", "Alice")

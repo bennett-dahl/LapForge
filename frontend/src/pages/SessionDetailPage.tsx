@@ -476,6 +476,11 @@ export default function SessionDetailPage() {
           </h1>
           <p className="muted">
             {session.car} / {session.driver}
+            {session.created_at ? (
+              <span style={{ marginLeft: 12, opacity: 0.7 }}>
+                {new Date(session.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+              </span>
+            ) : null}
           </p>
         </div>
         <div className="session-detail-actions">
@@ -1072,6 +1077,12 @@ function SessionInfoPanel({
                 </div>
               ) : null;
             })()}
+            {s.created_at ? (
+              <div>
+                <dt>Added</dt>
+                <dd>{new Date(String(s.created_at)).toLocaleString()}</dd>
+              </div>
+            ) : null}
             {s.file_path ? (
               <div>
                 <dt>Source File</dt>
