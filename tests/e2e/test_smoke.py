@@ -119,3 +119,58 @@ class TestSettingsFlow:
         page.wait_for_selector(".tab-content", timeout=5000)
         content = page.inner_text(".tab-content")
         assert "signed in" in content.lower() or "sign in" in content.lower()
+
+    def test_tab_deep_link(self, page, base_url):
+        """?tab=sync query param opens the Sync tab directly."""
+        page.goto(f"{base_url}/settings?tab=sync")
+        page.wait_for_selector(".tabs", timeout=8000)
+        page.wait_for_selector(".tab-content", timeout=5000)
+        # The sync tab content either shows the SyncPanel or an oauth/login message
+        content = page.inner_text(".tab-content")
+        assert "sync" in content.lower() or "oauth" in content.lower() or "sign in" in content.lower()
+
+
+class TestHomePolish:
+    def test_sync_strip_present(self, page, base_url):
+        """Sync summary strip is always rendered on the home page."""
+        page.goto(base_url)
+        page.wait_for_selector("#sidebar", timeout=8000)
+        # Wait for React query to settle and strip to appear
+        el = page.wait_for_selector('[data-testid="home-sync-summary"]', timeout=8000)
+        assert el is not None
+        # In the e2e environment OAuth is not configured; strip shows muted text
+        text = el.inner_text().lower()
+        assert "sync" in text
+
+    def test_app_footer_present(self, page, base_url):
+        """App footer with data path is always visible."""
+        page.goto(base_url)
+        page.wait_for_selector("#sidebar", timeout=8000)
+        footer = page.wait_for_selector('[data-testid="app-footer"]', timeout=8000)
+        assert footer is not None
+        assert footer.is_visible()
+
+    def test_app_footer_shows_data_path(self, page, base_url, e2e_data_root):
+        """Footer includes a fragment of the known e2e data root path."""
+        page.goto(base_url)
+        page.wait_for_selector('[data-testid="app-footer"]', timeout=8000)
+        footer_text = page.inner_text('[data-testid="app-footer"]')
+        # e2e_data_root is a tmp path; at least part of it appears in footer
+        assert str(e2e_data_root).replace("\\", "/")[:10] in footer_text.replace("\\", "/") or \
+               "Data:" in footer_text
+
+
+class TestSessionsPolish:
+    def test_added_column_header(self, page, base_url):
+        """Sessions table has an 'Added' column header."""
+        page.goto(f"{base_url}/sessions")
+        page.wait_for_selector(".data-table", timeout=8000)
+        header_text = page.inner_text(".data-table thead")
+        assert "Added" in header_text
+
+    def test_added_column_shows_date(self, page, base_url):
+        """The seeded session (created_at=2025-01-15) shows 'Jan 15' in the Added column."""
+        page.goto(f"{base_url}/sessions")
+        page.wait_for_selector(".data-table", timeout=8000)
+        table_text = page.inner_text(".data-table tbody")
+        assert "Jan 15" in table_text

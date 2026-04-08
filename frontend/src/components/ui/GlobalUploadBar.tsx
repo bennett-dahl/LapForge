@@ -1,20 +1,38 @@
+import { Link } from 'react-router-dom';
 import { useUploadProgress } from '../../contexts/UploadProgressContext';
 
 export default function GlobalUploadBar() {
-  const { active, filename, progress, total, status, dismiss } = useUploadProgress();
+  const {
+    active,
+    phase,
+    filename,
+    progress,
+    total,
+    status,
+    processingPct,
+    processingError,
+    dismiss,
+  } = useUploadProgress();
 
   if (!active) return null;
 
-  const pct =
-    total > 0 ? Math.min(100, Math.round((progress / total) * 100)) : status === 'Processing...' ? 100 : 0;
-  const isError = status !== 'Uploading...' && status !== 'Processing...' && status.length > 0;
+  const isProcessing = phase === 'processing';
+  const isError = phase === 'error' || !!processingError;
+
+  const pct = isProcessing
+    ? processingPct
+    : total > 0
+      ? Math.min(100, Math.round((progress / total) * 100))
+      : status === 'Processing...'
+        ? 100
+        : 0;
 
   return (
     <div className="bg-upload-bar" role="status" aria-live="polite">
       <div className="bg-upload-inner">
-        <span className="bg-upload-label" title={filename}>
+        <Link className="bg-upload-label bg-upload-link" to="/upload" title={filename}>
           {filename || 'Upload'}
-        </span>
+        </Link>
         <div
           className="bg-upload-progress"
           role="progressbar"
@@ -35,7 +53,7 @@ export default function GlobalUploadBar() {
           onClick={dismiss}
           aria-label="Dismiss upload progress"
         >
-          ×
+          &times;
         </button>
       </div>
     </div>

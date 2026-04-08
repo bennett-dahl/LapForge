@@ -258,6 +258,7 @@ class TestPlanCRUD:
         assert got.weekend_id == w.id
         assert got.planning_mode == "both"
         assert len(got.checklist) == 7  # default checklist steps
+        assert got.notes == ""
 
     def test_get_for_car_weekend(self, store):
         cd = store.add_car_driver("911", "Alice")
@@ -289,6 +290,18 @@ class TestPlanCRUD:
         assert updated.session_ids == ["s1", "s2"]
         assert updated.qual_plan["fl"] == 24.5
         assert updated.pressure_band_psi == 0.3
+
+    def test_plan_notes_persist(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        p = store.add_plan(cd.id, w.id)
+        text = "Stint 3: watch rears"
+        updated = store.update_plan(p.id, notes=text)
+        assert updated is not None
+        assert updated.notes == text
+        again = store.get_plan(p.id)
+        assert again is not None
+        assert again.notes == text
 
     def test_delete(self, store):
         cd = store.add_car_driver("911", "Alice")

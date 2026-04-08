@@ -1,8 +1,10 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import type { AuthUserResponse } from '../types/api';
+import { useQuery } from '@tanstack/react-query';
+import type { AuthUserResponse, SettingsResponse } from '../types/api';
 import { apiGet } from '../api/client';
 import ErrorBoundary from '../components/ui/ErrorBoundary';
+import { useUploadProgress } from '../contexts/UploadProgressContext';
 
 interface NavItem {
   to: string;
@@ -25,12 +27,13 @@ const NAV_BOTTOM: NavItem[] = [
   { to: '/settings', label: 'Settings', svg: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>' },
 ];
 
-function NavLinkItem({ item }: { item: NavItem }) {
+function NavLinkItem({ item, busy }: { item: NavItem; busy?: boolean }) {
   return (
     <NavLink
       to={item.to}
       end={item.end}
-      className={({ isActive }) => `sb-link${isActive ? ' active' : ''}`}
+      className={({ isActive }) => `sb-link${isActive ? ' active' : ''}${busy ? ' sb-busy' : ''}`}
+      aria-busy={busy || undefined}
     >
       <svg
         viewBox="0 0 24 24"
@@ -40,6 +43,7 @@ function NavLinkItem({ item }: { item: NavItem }) {
         dangerouslySetInnerHTML={{ __html: item.svg }}
       />
       <span className="sb-label">{item.label}</span>
+      {busy && <span className="sb-busy-dot" />}
     </NavLink>
   );
 }
@@ -49,10 +53,19 @@ export default function AppLayout() {
     localStorage.getItem('sidebar_collapsed') === '1',
   );
   const [user, setUser] = useState<AuthUserResponse | null>(null);
+  const { phase: uploadPhase } = useUploadProgress();
+  const uploadBusy = uploadPhase === 'uploading' || uploadPhase === 'processing';
 
   useEffect(() => {
     apiGet<AuthUserResponse>('/api/auth/user').then(setUser).catch(() => setUser(null));
   }, []);
+
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => apiGet<SettingsResponse>('/api/settings'),
+  });
+
+  const appVersion = (window as Window & { electronAPI?: { appVersion?: string } }).electronAPI?.appVersion;
 
   function toggleSidebar() {
     const next = !collapsed;
@@ -68,7 +81,7 @@ export default function AppLayout() {
         </div>
         <nav className="sb-nav">
           {NAV_TOP.map((item) => (
-            <NavLinkItem key={item.to} item={item} />
+            <NavLinkItem key={item.to} item={item} busy={item.to === '/upload' && uploadBusy} />
           ))}
           <div className="sb-divider" />
           {NAV_BOTTOM.map((item) => (
@@ -116,9 +129,21 @@ export default function AppLayout() {
         </div>
       </aside>
       <main className="main-content">
-        <ErrorBoundary>
-          <Outlet />
-        </ErrorBoundary>
+        <div className="main-scroll-area">
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
+        </div>
+        <footer className="app-footer" data-testid="app-footer">
+          {settings?.data_root && (
+            <span title={settings.data_root}>
+              Data: <span className="app-footer-path">{settings.data_root}</span>
+            </span>
+          )}
+          {appVersion && (
+            <span>v{appVersion}</span>
+          )}
+        </footer>
       </main>
     </div>
   );

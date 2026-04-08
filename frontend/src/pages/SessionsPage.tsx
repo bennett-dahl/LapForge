@@ -85,6 +85,7 @@ export default function SessionsPage() {
               <th>Car (session)</th>
               <th>Driver (session)</th>
               <th>Car / Driver</th>
+              <th>Added</th>
               <th>Laps</th>
               <th>Temps</th>
               <th></th>
@@ -107,6 +108,11 @@ export default function SessionsPage() {
                   <td>{s.car?.trim() ? s.car : '—'}</td>
                   <td>{s.driver?.trim() ? s.driver : '—'}</td>
                   <td>{cd ? `${cd.car_identifier} / ${cd.driver_name}` : '—'}</td>
+                  <td>
+                    {s.created_at?.trim()
+                      ? new Date(s.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                      : '—'}
+                  </td>
                   <td>{s.lap_count}</td>
                   <td>
                     {s.ambient_temp_c != null && `${s.ambient_temp_c}${tempLabel('c')}`}

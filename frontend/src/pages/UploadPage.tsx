@@ -1,11 +1,10 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet, apiUploadWithProgress } from '../api/client';
 import { useUploadProgress } from '../contexts/UploadProgressContext';
 import type { CarDriver } from '../types/models';
 import { SessionType } from '../types/models';
-import type { UploadParseResponse, UploadTaskStatus } from '../types/api';
+import type { UploadParseResponse } from '../types/api';
 import Button from '../components/ui/Button';
 
 const SESSION_TYPE_OPTIONS: SessionType[] = [
@@ -29,7 +28,6 @@ function strMeta(v: string | number | undefined): string {
 }
 
 export default function UploadPage() {
-  const navigate = useNavigate();
   const uploadProgress = useUploadProgress();
 
   useEffect(() => {
@@ -46,8 +44,6 @@ export default function UploadPage() {
   const [error, setError] = useState('');
   const [parsed, setParsed] = useState<UploadParseResponse | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const [taskStatus, setTaskStatus] = useState<UploadTaskStatus | null>(null);
 
   const [formCd, setFormCd] = useState('');
   const [formSessionType, setFormSessionType] = useState<SessionType>(SessionType.Practice1);
@@ -70,6 +66,8 @@ export default function UploadPage() {
     setFormOutingNumber(strMeta(fm.outing_number) || meta.OutingNumber || '');
     setFormSessionNumber(strMeta(fm.session_number) || meta.SessionNumber || '');
   }, [parsed]);
+
+  const busy = uploadProgress.phase === 'uploading' || uploadProgress.phase === 'processing';
 
   async function handleFileUpload() {
     if (!file) return;
@@ -136,8 +134,7 @@ export default function UploadPage() {
         },
       );
       if (res.task_id) {
-        uploadProgress.dismiss();
-        setTaskId(res.task_id);
+        uploadProgress.beginProcessingTask(res.task_id, label);
       } else if (res.error) {
         uploadProgress.failUpload(res.error);
         setError(res.error);
@@ -153,32 +150,14 @@ export default function UploadPage() {
     }
   }
 
-  const pollTask = useCallback(async () => {
-    if (!taskId) return;
-    try {
-      const status = await apiGet<UploadTaskStatus>(`/api/upload-status/${taskId}`);
-      setTaskStatus(status);
-      if (status.done && status.redirect) {
-        const sessionId = status.redirect.replace('/sessions/', '');
-        navigate(`/sessions/${sessionId}`);
-      }
-    } catch {
-      // poll will retry
-    }
-  }, [taskId, navigate]);
-
-  useEffect(() => {
-    if (!taskId) return;
-    const iv = setInterval(pollTask, 1000);
-    return () => clearInterval(iv);
-  }, [taskId, pollTask]);
-
   const metadata = parsed?.metadata;
 
   const showParseStats =
     parsed &&
     typeof parsed.row_count === 'number' &&
     typeof parsed.lap_split_count === 'number';
+
+  const showProcessingCard = uploadProgress.phase === 'processing' && uploadProgress.taskId;
 
   return (
     <div className="page-content">
@@ -189,15 +168,25 @@ export default function UploadPage() {
       <p className="muted">Import a Pi Toolbox Versioned ASCII export file (.txt).</p>
 
       {error && <div className="alert alert-danger">{error}</div>}
+      {uploadProgress.phase === 'error' && uploadProgress.processingError && !error && (
+        <div className="alert alert-danger">{uploadProgress.processingError}</div>
+      )}
 
-      {taskId && taskStatus ? (
+      {showProcessingCard ? (
         <div className="upload-progress card">
           <h3>Processing...</h3>
           <div className="progress-bar-wrap">
-            <div className="progress-bar-fill" style={{ width: `${taskStatus.pct}%` }} />
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${uploadProgress.processingPct}%` }}
+            />
           </div>
-          <p className="muted">{taskStatus.label || taskStatus.stage}</p>
-          {taskStatus.error && <div className="alert alert-danger">{taskStatus.error}</div>}
+          <p className="muted">
+            {uploadProgress.processingStage || uploadProgress.filename || 'Processing...'}
+          </p>
+          {uploadProgress.processingError && (
+            <div className="alert alert-danger">{uploadProgress.processingError}</div>
+          )}
         </div>
       ) : parsed ? (
         <div className="card">
@@ -314,7 +303,7 @@ export default function UploadPage() {
             />
           </div>
           <div className="form-actions">
-            <Button onClick={handleSave} disabled={uploading || !formCd}>
+            <Button onClick={handleSave} disabled={busy || uploading || !formCd}>
               {uploading ? 'Saving...' : 'Save Session'}
             </Button>
             <Button
@@ -362,7 +351,7 @@ export default function UploadPage() {
             />
           </div>
           <div className="form-actions">
-            <Button onClick={handleFileUpload} disabled={!file || uploading}>
+            <Button onClick={handleFileUpload} disabled={!file || busy || uploading}>
               {uploading ? 'Uploading...' : 'Upload & Parse'}
             </Button>
           </div>

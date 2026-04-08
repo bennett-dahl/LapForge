@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPatch, apiPost } from '../api/client';
 import type { SettingsResponse } from '../types/api';
 import Button from '../components/ui/Button';
@@ -19,9 +20,15 @@ function normalizeDistanceUnit(u: string): string {
   return x === 'mi' ? 'mi' : 'km';
 }
 
+const VALID_TABS: Tab[] = ['preferences', 'data', 'backup', 'sync', 'account'];
+
 export default function SettingsPage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<Tab>('preferences');
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState<Tab>(() => {
+    const t = searchParams.get('tab') as Tab | null;
+    return t && VALID_TABS.includes(t) ? t : 'preferences';
+  });
 
   useEffect(() => {
     document.title = 'LapForge - Settings';

@@ -16,11 +16,13 @@ import PlanListPage from './pages/PlanListPage';
 import PlanRedirect from './pages/PlanRedirect';
 import PlanPage from './pages/PlanPage';
 import ElectronUpdateToast from './components/ui/ElectronUpdateToast';
+import UploadBackgroundPoller from './components/UploadBackgroundPoller';
 
 export default function App() {
   return (
     <UploadProgressProvider>
       <GlobalUploadBar />
+      <UploadBackgroundPoller />
       <ElectronUpdateToast />
       <Routes>
         <Route element={<AppLayout />}>

@@ -116,6 +116,8 @@ export interface Plan {
   current_ambient_temp_c: number | null;
   current_track_temp_c: number | null;
   created_at: string;
+  /** Plan-level free-form notes (distinct from per-checklist-step notes). */
+  notes?: string;
 }
 
 export interface LapBandSummary {

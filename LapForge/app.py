@@ -1690,6 +1690,7 @@ def create_app() -> Flask:
             "checklist", "planning_mode", "qual_plan", "race_plan",
             "qual_lap_range", "race_stint_lap_range", "pressure_band_psi",
             "session_ids", "current_ambient_temp_c", "current_track_temp_c",
+            "notes",
         }
         kwargs = {k: v for k, v in data.items() if k in allowed}
         updated = store.update_plan(plan_id, **kwargs)

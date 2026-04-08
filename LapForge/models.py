@@ -221,6 +221,7 @@ class Plan:
     current_ambient_temp_c: float | None = None
     current_track_temp_c: float | None = None
     created_at: str = ""
+    notes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -238,6 +239,7 @@ class Plan:
             "current_ambient_temp_c": self.current_ambient_temp_c,
             "current_track_temp_c": self.current_track_temp_c,
             "created_at": self.created_at,
+            "notes": self.notes,
         }
 
     @classmethod
@@ -269,6 +271,7 @@ class Plan:
             current_ambient_temp_c=d.get("current_ambient_temp_c"),
             current_track_temp_c=d.get("current_track_temp_c"),
             created_at=str(d.get("created_at", "")),
+            notes=str(d.get("notes") or ""),
         )
 
 

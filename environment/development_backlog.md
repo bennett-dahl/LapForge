@@ -33,21 +33,7 @@
 
 ---
 
-#### 2. Home page — remaining polish
-
-**Done:** Empty-state CTAs, recent sessions (with `created_at` first, legacy sessions without date sorted after), shortcuts to Plan / Tire Sets / Track Layouts, `.card-grid` / home card styling in `LapForge/static/style.css`.
-
-**Still open:**
-- **Sync at a glance:** One line or badge (last sync, signed-in) + link to Settings without embedding full `SyncPanel`.
-- **App context:** Footer strip with app version (preload) and/or data path.
-- **Sessions list:** Optional `created_at` column or secondary line on `SessionsPage`.
-- **Playwright:** Extend smoke if home selectors need coverage.
-
-**Key files:** `frontend/src/pages/IndexPage.tsx`, `frontend/src/layouts/AppLayout.tsx`, `frontend/src/pages/SessionsPage.tsx`.
-
----
-
-#### 3. Background upload — navigate away without interrupting sync
+#### 2. Background upload — navigate away without interrupting sync
 
 **Problem:** Leaving the Upload page during upload/sync appears to cancel work.
 
@@ -57,7 +43,7 @@
 
 ---
 
-#### 4. Telemetry distance axis — trim blank leading/trailing regions
+#### 3. Telemetry distance axis — trim blank leading/trailing regions
 
 **Problem:** Some exports stretch the distance axis with long empty or flat regions; real laps cluster in the middle.
 
@@ -67,7 +53,7 @@
 
 ---
 
-#### 5. Cloud backup — move off personal Google Drive (explore)
+#### 4. Cloud backup — move off personal Google Drive (explore)
 
 **Problem:** Cloud sync today uses the signed-in user’s personal Google Drive (`DriveClient` in `LapForge/sync/cloud_google.py`, OAuth + `engine.py`). That does not scale operationally or perception-wise as the product grows.
 
@@ -79,7 +65,7 @@
 
 ---
 
-#### 6. Tire sets, weekends, and plan integration (reassess linkage)
+#### 5. Tire sets, weekends, and plan integration (reassess linkage)
 
 **Problem:** Tire sets are largely scoped to **car / driver** (`car_driver_id` on `tire_sets`). A **weekend** (event) is the natural unit for “which rubber is on the car, at what cold/hot pressures, across practice → qual → race,” but that story is not first-class. Sessions link to a tire set id, and the **plan** ties sessions to a weekend, yet there is no clear, durable link that answers: *for this weekend and this car, which tire sets are in play and how do morning / roll-out / target pressures evolve?* The **Tire Sets** library and **Plan** board feel loosely coupled.
 
@@ -101,7 +87,7 @@
 
 ## Future phases
 
-### 7. Rust processing modules (napi-rs)
+### 6. Rust processing modules (napi-rs)
 
 Replace hot paths in the Python pipeline with Rust; same `process_session`-style interface; compare against fixtures. Later callable from Node after backend migration.
 
@@ -116,6 +102,20 @@ Express/Fastify, `better-sqlite3`, `googleapis`, `keytar` / `safeStorage`, Rust 
 ---
 
 ## Recently completed
+
+### Home page — remaining polish (former backlog #2)
+
+**What shipped:**
+
+1. **Sync at a glance** (`IndexPage`): compact badge + last-synced timestamp + link to Settings (`?tab=sync`); `oauth_not_configured` / `not_logged_in` render a muted one-liner only. `STATUS_LABELS` extracted to `frontend/src/utils/syncStatus.ts`; `staleTime: 60 s, refetchOnWindowFocus: false` added to both `IndexPage` and `SyncPanel` queries.
+2. **Settings deep-link**: `SettingsPage` reads `?tab=` from `useSearchParams` on mount and activates the matching tab.
+3. **App context footer**: `AppLayout` renders a pinned footer (`data-testid="app-footer"`) with `data_root` (from settings query) and Electron `appVersion` (absent in web context). `.main-content` changed to flex column; content wrapped in `.main-scroll-area` (`flex:1; overflow-y:auto`).
+4. **Sessions Added column**: `SessionsPage` table shows `created_at` as short date (`Jan 15`) or `—`; e2e seed fixture given `created_at="2025-01-15T10:00:00Z"`.
+5. **Playwright smoke**: new `TestHomePolish`, `TestSessionsPolish`, and `TestSettingsFlow.test_tab_deep_link` covering all four shipped items.
+
+**Key files:** `frontend/src/pages/IndexPage.tsx`, `frontend/src/layouts/AppLayout.tsx`, `frontend/src/pages/SessionsPage.tsx`, `frontend/src/pages/SettingsPage.tsx`, `frontend/src/components/SyncPanel.tsx`, `frontend/src/utils/syncStatus.ts`, `LapForge/static/style.css`, `tests/e2e/test_smoke.py`, `tests/e2e/conftest.py`.
+
+---
 
 ### Session detail dashboard — TPMS pressure units (former high-priority #1)
 

@@ -3,19 +3,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet } from '../api/client';
 import type { SyncStatusResponse, SyncFilesResponse, SyncFile } from '../types/api';
 import Button from './ui/Button';
+import { SYNC_STATUS_LABELS } from '../utils/syncStatus';
 
-const STATUS_LABELS: Record<string, string> = {
-  in_sync: 'In sync',
-  local_dirty: 'Local changes pending',
-  no_remote: 'No remote backup',
-  no_credentials: 'Sign in again',
-  conflict: 'Conflict',
-  remote_changed: 'Remote changes available',
-  never_synced: 'Never synced',
-  error: 'Error',
-  oauth_not_configured: 'OAuth not configured',
-  not_logged_in: 'Not signed in',
-};
+const STATUS_LABELS = SYNC_STATUS_LABELS;
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -62,6 +52,8 @@ export default function SyncPanel() {
   const { data: status, refetch: refetchStatus } = useQuery({
     queryKey: ['sync-status'],
     queryFn: () => apiGet<SyncStatusResponse>('/api/sync/status'),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: files, refetch: refetchFiles } = useQuery({

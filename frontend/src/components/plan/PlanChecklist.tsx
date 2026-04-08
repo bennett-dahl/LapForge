@@ -104,6 +104,20 @@ export default function PlanChecklist({ plan, carDriverId, onUpdate, refetchBoar
           );
         })}
       </div>
+
+      <div style={{ marginTop: 16 }}>
+        <h4 style={{ margin: '0 0 8px', fontSize: 13, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+          Notes
+        </h4>
+        <textarea
+          className="input"
+          rows={4}
+          style={{ width: '100%', fontSize: 12, resize: 'vertical' }}
+          placeholder="Notes for this plan..."
+          value={plan.notes ?? ''}
+          onChange={e => onUpdate({ notes: e.target.value } as Partial<Plan>)}
+        />
+      </div>
     </div>
   );
 }

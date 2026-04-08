@@ -133,6 +133,7 @@ def seed_data(e2e_server, e2e_data_root):
         target_pressure_psi=27.0,
         file_path="uploads/e2e-session.txt",
         parsed_data=processed,
+        created_at="2025-01-15T10:00:00Z",
     )
     store.add_session(session)
     return cd, session

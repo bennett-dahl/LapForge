@@ -128,7 +128,7 @@ class TestPlan:
         p = Plan(id="p1", car_driver_id="cd1", weekend_id="w1",
                  session_ids=["s1", "s2"], planning_mode="qual",
                  qual_plan={"fl": 24.5, "fr": 24.5, "rl": 22.0, "rr": 22.0, "target": 30},
-                 pressure_band_psi=0.3)
+                 pressure_band_psi=0.3, notes="Bring rain tires")
         d = p.to_dict()
         p2 = Plan.from_dict(d)
         assert p2.session_ids == ["s1", "s2"]
@@ -136,6 +136,7 @@ class TestPlan:
         assert p2.qual_plan["fl"] == 24.5
         assert p2.pressure_band_psi == 0.3
         assert p2.qual_lap_range == [2, 3]
+        assert p2.notes == "Bring rain tires"
 
     def test_defaults(self):
         p = Plan.from_dict({"id": "p2", "car_driver_id": "cd1", "weekend_id": "w1"})
@@ -144,6 +145,7 @@ class TestPlan:
         assert p.checklist == []
         assert p.pressure_band_psi == 0.5
         assert p.current_ambient_temp_c is None
+        assert p.notes == ""
 
     def test_json_string_parsing(self):
         import json

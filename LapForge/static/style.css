@@ -139,6 +139,27 @@ a:hover { text-decoration: underline; }
   pointer-events: none;
 }
 
+.sb-busy-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent, #c8960c);
+  flex-shrink: 0;
+  animation: sb-pulse 1.4s ease-in-out infinite;
+}
+@keyframes sb-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.sidebar.collapsed .sb-busy-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+}
+.sb-link.sb-busy { position: relative; }
+
 .sb-divider {
   height: 1px;
   background: var(--border);
@@ -212,13 +233,41 @@ a:hover { text-decoration: underline; }
   width: calc(100vw - var(--sb-width));
   min-width: 0;
   height: 100vh;
-  overflow-y: auto;
-  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   transition: margin-left var(--sb-transition), width var(--sb-transition);
 }
 .sidebar.collapsed ~ .main-content {
   margin-left: var(--sb-collapsed-width);
   width: calc(100vw - var(--sb-collapsed-width));
+}
+.main-scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+.app-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.3rem 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.app-footer-path {
+  font-family: monospace;
+  font-size: 0.7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40ch;
+  display: inline-block;
+  vertical-align: bottom;
 }
 
 .container { max-width: 1200px; margin: 0 auto; padding: 1rem; }

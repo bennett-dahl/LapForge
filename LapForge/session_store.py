@@ -140,6 +140,7 @@ class SessionStore:
                     current_ambient_temp_c REAL,
                     current_track_temp_c REAL,
                     created_at TEXT DEFAULT '',
+                    notes TEXT DEFAULT '',
                     FOREIGN KEY (car_driver_id) REFERENCES car_drivers(id),
                     FOREIGN KEY (weekend_id) REFERENCES weekends(id),
                     UNIQUE(car_driver_id, weekend_id)
@@ -237,6 +238,7 @@ class SessionStore:
                         current_ambient_temp_c REAL,
                         current_track_temp_c REAL,
                         created_at TEXT DEFAULT '',
+                        notes TEXT DEFAULT '',
                         FOREIGN KEY (car_driver_id) REFERENCES car_drivers(id),
                         FOREIGN KEY (weekend_id) REFERENCES weekends(id),
                         UNIQUE(car_driver_id, weekend_id)
@@ -268,6 +270,13 @@ class SessionStore:
             }
             if sc_cols and "dashboard_layout_json" not in sc_cols:
                 c.execute("ALTER TABLE saved_comparisons ADD COLUMN dashboard_layout_json TEXT")
+
+            plan_cols = {
+                row[1]
+                for row in c.execute("PRAGMA table_info(plans)").fetchall()
+            }
+            if plan_cols and "notes" not in plan_cols:
+                c.execute("ALTER TABLE plans ADD COLUMN notes TEXT DEFAULT ''")
 
             ts_cols = {
                 row[1]
@@ -746,13 +755,13 @@ class SessionStore:
                 """INSERT INTO plans (id, car_driver_id, weekend_id, session_ids_json,
                    checklist_json, planning_mode, qual_plan_json, race_plan_json,
                    qual_lap_range_json, race_stint_lap_range_json, pressure_band_psi,
-                   current_ambient_temp_c, current_track_temp_c, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   current_ambient_temp_c, current_track_temp_c, created_at, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (p.id, p.car_driver_id, p.weekend_id, json.dumps(p.session_ids),
                  json.dumps(p.checklist), p.planning_mode, json.dumps(p.qual_plan),
                  json.dumps(p.race_plan), json.dumps(p.qual_lap_range),
                  json.dumps(p.race_stint_lap_range), p.pressure_band_psi,
-                 p.current_ambient_temp_c, p.current_track_temp_c, p.created_at),
+                 p.current_ambient_temp_c, p.current_track_temp_c, p.created_at, p.notes),
             )
         return p
 
@@ -762,7 +771,7 @@ class SessionStore:
                 """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
                    planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
                    race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
-                   current_track_temp_c, created_at FROM plans WHERE id = ?""",
+                   current_track_temp_c, created_at, notes FROM plans WHERE id = ?""",
                 (plan_id,),
             ).fetchone()
         if not row:
@@ -775,7 +784,7 @@ class SessionStore:
                 """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
                    planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
                    race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
-                   current_track_temp_c, created_at FROM plans
+                   current_track_temp_c, created_at, notes FROM plans
                    WHERE car_driver_id = ? AND weekend_id = ?""",
                 (car_driver_id, weekend_id),
             ).fetchone()
@@ -790,7 +799,7 @@ class SessionStore:
                     """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
                        planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
                        race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
-                       current_track_temp_c, created_at FROM plans WHERE weekend_id = ? ORDER BY created_at""",
+                       current_track_temp_c, created_at, notes FROM plans WHERE weekend_id = ? ORDER BY created_at""",
                     (weekend_id,),
                 ).fetchall()
             else:
@@ -798,7 +807,7 @@ class SessionStore:
                     """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
                        planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
                        race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
-                       current_track_temp_c, created_at FROM plans ORDER BY created_at"""
+                       current_track_temp_c, created_at, notes FROM plans ORDER BY created_at"""
                 ).fetchall()
         return [self._plan_from_row(r) for r in rows]
 
@@ -815,7 +824,7 @@ class SessionStore:
             "race_stint_lap_range": "race_stint_lap_range_json",
         }
         scalar_fields = {"planning_mode", "pressure_band_psi",
-                         "current_ambient_temp_c", "current_track_temp_c"}
+                         "current_ambient_temp_c", "current_track_temp_c", "notes"}
         sets: list[str] = []
         vals: list[Any] = []
         for k, v in kwargs.items():
@@ -852,6 +861,7 @@ class SessionStore:
             current_ambient_temp_c=row[11],
             current_track_temp_c=row[12],
             created_at=row[13] or "",
+            notes=(row[14] or "") if len(row) > 14 else "",
         )
 
     # ---------- Saved comparison (Compare view bookmarks) ----------

@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { apiGet } from '../api/client';
 import type { CarDriver } from '../types/models';
-import type { SessionsFullResponse } from '../types/api';
+import type { SessionsFullResponse, SyncStatusResponse } from '../types/api';
+import { syncStatusLabel } from '../utils/syncStatus';
 
 const MAX_RECENT = 5;
 
@@ -22,6 +23,13 @@ export default function IndexPage() {
     queryFn: () => apiGet<SessionsFullResponse>('/api/sessions-full'),
   });
 
+  const { data: syncStatus } = useQuery({
+    queryKey: ['sync-status'],
+    queryFn: () => apiGet<SyncStatusResponse>('/api/sync/status'),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+
   const recentSessions = useMemo(() => {
     if (!sessionsData?.sessions?.length) return [];
     const all = sessionsData.sessions;
@@ -38,6 +46,27 @@ export default function IndexPage() {
     <div className="page-content">
       <h1>LapForge</h1>
       <p className="muted">Telemetry analysis for motorsport data.</p>
+
+      {syncStatus && (
+        <div data-testid="home-sync-summary" style={{ marginBottom: '0.75rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {(syncStatus.status === 'oauth_not_configured' || syncStatus.status === 'not_logged_in') ? (
+            <span className="muted">
+              Cloud sync not configured —{' '}
+              <Link to="/settings?tab=sync" style={{ color: 'var(--muted)' }}>Settings</Link>
+            </span>
+          ) : (
+            <>
+              <span className={`sync-badge sync-${syncStatus.status}`}>
+                {syncStatusLabel(syncStatus.status)}
+              </span>
+              {syncStatus.last_synced_at && (
+                <span className="muted">— last synced {new Date(syncStatus.last_synced_at).toLocaleString()}</span>
+              )}
+              <Link to="/settings?tab=sync" style={{ color: 'var(--muted)', marginLeft: 4 }}>Sync settings</Link>
+            </>
+          )}
+        </div>
+      )}
 
       {carDrivers.length === 0 && (
         <section className="home-section">
