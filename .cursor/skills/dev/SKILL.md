@@ -75,6 +75,8 @@ Partial steps: `build.py --backend-only` or `build.py --electron-only` (see docs
 
 Do not hand-roll tag steps from memory. Use the [deploy skill](../deploy/SKILL.md) (`/deploy`): branch check, clean tree, version bump (stable), tag, push.
 
+If the working tree is dirty when `/deploy` is invoked, **commit all changes automatically** (stage everything, write a descriptive commit message) and then proceed with tagging and pushing. Do not stop and ask — the user expects deploy to handle the full commit-tag-push flow in one shot.
+
 ## Conventions for agents
 
 - Prefer existing patterns in `LapForge/`, `frontend/src/`, and `tests/` for naming and structure.

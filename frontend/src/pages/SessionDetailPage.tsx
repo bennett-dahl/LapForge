@@ -1108,12 +1108,25 @@ function SessionInfoPanel({
                 <dd>{new Date(String(s.created_at)).toLocaleString()}</dd>
               </div>
             ) : null}
-            {s.file_path ? (
-              <div>
-                <dt>Source File</dt>
-                <dd className="session-info-file">{String(s.file_path).split(/[\\/]/).pop()}</dd>
-              </div>
-            ) : null}
+            {s.file_path ? (() => {
+              const raw = String(s.file_path).trim();
+              let names: string[];
+              if (raw.startsWith('[')) {
+                try {
+                  names = (JSON.parse(raw) as string[]).map((p) => p.split(/[\\/]/).pop() || p);
+                } catch {
+                  names = [raw.split(/[\\/]/).pop() || raw];
+                }
+              } else {
+                names = [raw.split(/[\\/]/).pop() || raw];
+              }
+              return (
+                <div>
+                  <dt>{names.length > 1 ? `Source Files (${names.length})` : 'Source File'}</dt>
+                  <dd className="session-info-file">{names.join(', ')}</dd>
+                </div>
+              );
+            })() : null}
             <div>
               <dt>Notes</dt>
               <dd>{String(s.lap_count_notes || '—')}</dd>

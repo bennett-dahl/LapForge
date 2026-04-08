@@ -203,6 +203,8 @@ export interface UploadParseResponse {
   parsed: true;
   metadata?: Record<string, string>;
   upload_path: string;
+  upload_paths?: string[];
+  file_count?: number;
   form_metadata?: UploadFormMetadata;
   row_count?: number;
   lap_split_count?: number;

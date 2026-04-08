@@ -66,14 +66,34 @@ class SessionStore:
         _migrate_old_db(self.db_path)
         self._init_schema()
 
-    def resolve_file_path(self, file_path: str | None) -> Path | None:
-        """Resolve a file_path (relative or legacy absolute) to an absolute Path."""
+    def resolve_file_paths(self, file_path: str | None) -> list[Path]:
+        """Resolve ``file_path`` to a list of absolute Paths.
+
+        Handles both legacy single-path strings and JSON-array strings
+        (``["uploads/a_0.txt","uploads/a_1.txt"]``) written by multi-file
+        uploads.  Returns an empty list when *file_path* is falsy.
+        """
         if not file_path:
-            return None
-        p = Path(file_path)
-        if p.is_absolute():
-            return p
-        return self.data_root / file_path
+            return []
+        import json as _json
+        fp = file_path.strip()
+        if fp.startswith("["):
+            try:
+                items = _json.loads(fp)
+            except (ValueError, TypeError):
+                items = [fp]
+        else:
+            items = [fp]
+        out: list[Path] = []
+        for item in items:
+            p = Path(item)
+            out.append(p if p.is_absolute() else self.data_root / item)
+        return out
+
+    def resolve_file_path(self, file_path: str | None) -> Path | None:
+        """Resolve a file_path to an absolute Path (first file if multi-file)."""
+        paths = self.resolve_file_paths(file_path)
+        return paths[0] if paths else None
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self.db_path))
@@ -655,12 +675,11 @@ class SessionStore:
         referenced: set[str] = set()
         for (fp,) in rows:
             if fp:
-                p = Path(fp)
-                resolved = (self.data_root / fp) if not p.is_absolute() else p
-                try:
-                    referenced.add(str(resolved.resolve()))
-                except OSError:
-                    pass
+                for resolved in self.resolve_file_paths(fp):
+                    try:
+                        referenced.add(str(resolved.resolve()))
+                    except OSError:
+                        pass
         removed: list[str] = []
         uploads_canon = self.uploads_dir.resolve()
         for child in self.uploads_dir.iterdir():

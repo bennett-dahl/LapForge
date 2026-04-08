@@ -40,7 +40,7 @@ export default function UploadPage() {
   });
 
   const fileRef = useRef<HTMLInputElement>(null);
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState('');
   const [parsed, setParsed] = useState<UploadParseResponse | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -70,17 +70,22 @@ export default function UploadPage() {
   const busy = uploadProgress.phase === 'uploading' || uploadProgress.phase === 'processing';
 
   async function handleFileUpload() {
-    if (!file) return;
-    if (!file.name.endsWith('.txt')) {
-      setError('File must be a .txt Pi Toolbox export.');
-      return;
+    if (files.length === 0) return;
+    for (const f of files) {
+      if (!f.name.endsWith('.txt')) {
+        setError(`File must be a .txt Pi Toolbox export: ${f.name}`);
+        return;
+      }
     }
     setError('');
     setUploading(true);
-    uploadProgress.startUpload(file.name);
+    const label = files.length === 1 ? files[0].name : `${files.length} outing files`;
+    uploadProgress.startUpload(label);
     try {
       const fd = new FormData();
-      fd.append('file', file);
+      for (const f of files) {
+        fd.append('file', f);
+      }
       if (formCd) fd.append('car_driver_id', formCd);
       const res = await apiUploadWithProgress<UploadParseResponse & { error?: string }>(
         '/upload',
@@ -112,12 +117,18 @@ export default function UploadPage() {
     if (!parsed) return;
     setUploading(true);
     setError('');
-    const label = file?.name ? `Save: ${file.name}` : 'Save session';
+    const label =
+      files.length === 1
+        ? `Save: ${files[0].name}`
+        : `Save: ${files.length} outing files`;
     uploadProgress.startUpload(label);
     try {
       const fd = new FormData();
       fd.append('save', '1');
-      fd.append('upload_path', parsed.upload_path || '');
+      const paths = parsed.upload_paths ?? (parsed.upload_path ? [parsed.upload_path] : []);
+      for (const p of paths) {
+        fd.append('upload_path', p);
+      }
       fd.append('car_driver_id', formCd);
       fd.append('session_type', formSessionType);
       fd.append('track', formTrack);
@@ -151,6 +162,7 @@ export default function UploadPage() {
   }
 
   const metadata = parsed?.metadata;
+  const fileCount = parsed?.file_count ?? 0;
 
   const showParseStats =
     parsed &&
@@ -162,10 +174,10 @@ export default function UploadPage() {
   return (
     <div className="page-content">
       <h1>Upload</h1>
+      <p className="muted">Import Pi Toolbox Versioned ASCII export files (.txt).</p>
       <p className="muted">
-        Upload telemetry data files from your data logger. Supported formats: CSV, MoTeC LD/LDX.
+        Select one file or multiple outing files from the same session to merge them.
       </p>
-      <p className="muted">Import a Pi Toolbox Versioned ASCII export file (.txt).</p>
 
       {error && <div className="alert alert-danger">{error}</div>}
       {uploadProgress.phase === 'error' && uploadProgress.processingError && !error && (
@@ -193,7 +205,8 @@ export default function UploadPage() {
           <h3>Parsed Data Preview</h3>
           {showParseStats && (
             <p className="muted">
-              Parsed: {parsed.row_count} rows, {parsed.lap_split_count} lap splits
+              {fileCount > 1 ? `${fileCount} outing files merged — ` : ''}
+              {parsed.row_count} rows, {parsed.lap_split_count} lap splits
             </p>
           )}
           {metadata && Object.keys(metadata).length > 0 && (
@@ -310,7 +323,7 @@ export default function UploadPage() {
               variant="secondary"
               onClick={() => {
                 setParsed(null);
-                setFile(null);
+                setFiles([]);
               }}
             >
               Cancel
@@ -339,20 +352,26 @@ export default function UploadPage() {
           </div>
           <div className="form-group">
             <label className="form-label" htmlFor="upload-file">
-              Export File (.txt)
+              Export File(s) (.txt)
             </label>
             <input
               id="upload-file"
               ref={fileRef}
               type="file"
               accept=".txt"
+              multiple
               className="form-input"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
             />
+            {files.length > 1 && (
+              <p className="muted" style={{ marginTop: '0.25rem' }}>
+                {files.length} files selected — will be merged into one session
+              </p>
+            )}
           </div>
           <div className="form-actions">
-            <Button onClick={handleFileUpload} disabled={!file || busy || uploading}>
-              {uploading ? 'Uploading...' : 'Upload & Parse'}
+            <Button onClick={handleFileUpload} disabled={files.length === 0 || busy || uploading}>
+              {uploading ? 'Uploading...' : files.length > 1 ? `Upload & Parse ${files.length} Files` : 'Upload & Parse'}
             </Button>
           </div>
         </div>

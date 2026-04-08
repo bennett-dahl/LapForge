@@ -117,8 +117,33 @@ def _lap_index_at(t: float, lap_splits: list[float]) -> int:
 
 
 def normalize_channels(ctx: dict) -> None:
-    """Extract columnar arrays from parsed rows for every channel."""
+    """Extract columnar arrays from parsed rows for every channel.
+
+    If the parsed dict already carries ``_columnar`` data (multi-block or
+    merged multi-file), use it directly to avoid rebuilding from row dicts.
+    """
     parsed: dict = ctx["parsed"]
+
+    col_data = parsed.get("_columnar")
+    if col_data:
+        full_times = col_data["times"]
+        col_series = col_data["series"]
+        lap_indices = col_data.get("lap_indices") or []
+        data_cols = [c for c in (parsed.get("columns") or list(col_series.keys()))]
+
+        # Inject lap_index into series so downstream sees it
+        if lap_indices:
+            col_series["lap_index"] = lap_indices
+            if "lap_index" not in data_cols:
+                data_cols.append("lap_index")
+
+        ctx["time_col"] = "Time"
+        ctx["columns"] = data_cols
+        ctx["full_times"] = [round(t, 4) for t in full_times]
+        ctx["full_series"] = col_series
+        ctx["channel_meta"] = detect_channels(data_cols)
+        return
+
     rows: list[dict] = parsed.get("rows") or []
     if not rows:
         ctx["time_col"] = "time"
@@ -220,35 +245,11 @@ def compute_derived(ctx: dict) -> None:
     pass
 
 
-def smooth_pressure(ctx: dict) -> None:
-    """Apply linear-regression smoothing to pressure channels only.
-
-    Before smoothing, a copy of the unsmoothed pressure arrays is saved into
-    ctx["raw_pressure"] so the frontend can offer adjustable smoothing levels.
-    """
-    channel_meta: dict[str, dict] = ctx.get("channel_meta", {})
-    full_series: dict[str, list[float | None]] = ctx["full_series"]
-    smoothing_level: int = ctx.get("smoothing_level", 0)
-
-    pressure_cols = [
-        col for col, meta in channel_meta.items()
-        if meta.get("category") == "pressure" and col in full_series
-    ]
-    ctx["raw_pressure"] = {col: list(full_series[col]) for col in pressure_cols}
-
-    effective_window_s = CHART_SMOOTH_WINDOW_S * (1 + smoothing_level)
-    half_win = int(effective_window_s * CHART_SAMPLE_RATE_HZ / 2)
-
-    for col in pressure_cols:
-        full_series[col] = _smooth_linear_regression(full_series[col], half_win)
-
-
 def downsample_for_charts(ctx: dict) -> None:
     """Downsample full-resolution arrays to at most CHART_MAX_POINTS."""
     full_times: list[float] = ctx["full_times"]
     full_series: dict[str, list[float | None]] = ctx["full_series"]
     full_distances: list[float] = ctx.get("full_distances", [])
-    raw_pressure: dict[str, list] = ctx.get("raw_pressure", {})
 
     n = len(full_times)
     step = max(1, n // CHART_MAX_POINTS)
@@ -258,10 +259,44 @@ def downsample_for_charts(ctx: dict) -> None:
         c: [vals[i] for i in range(0, n, step)] for c, vals in full_series.items()
     }
     ctx["distances"] = full_distances[::step] if full_distances else []
-    ctx["raw_pressure_chart"] = {
-        c: [vals[i] for i in range(0, len(vals), step)]
-        for c, vals in raw_pressure.items()
-    }
+
+
+def smooth_pressure(ctx: dict) -> None:
+    """Apply linear-regression smoothing to pressure channels.
+
+    When called after ``downsample_for_charts``, operates on the already-
+    downsampled ``ctx["series"]`` (~CHART_MAX_POINTS values).  Falls back to
+    ``ctx["full_series"]`` for backward compatibility when called in isolation.
+
+    A copy of the unsmoothed arrays is saved into ``ctx["raw_pressure_chart"]``
+    (and ``ctx["raw_pressure"]`` for legacy callers).
+    """
+    channel_meta: dict[str, dict] = ctx.get("channel_meta", {})
+    smoothing_level: int = ctx.get("smoothing_level", 0)
+
+    # Prefer downsampled series; fall back to full for backward compat
+    series: dict[str, list[float | None]] = ctx.get("series") or ctx["full_series"]
+
+    pressure_cols = [
+        col for col, meta in channel_meta.items()
+        if meta.get("category") == "pressure" and col in series
+    ]
+
+    raw_copy = {col: list(series[col]) for col in pressure_cols}
+    ctx["raw_pressure_chart"] = raw_copy
+    ctx["raw_pressure"] = raw_copy
+
+    times = ctx.get("times") or ctx.get("full_times") or []
+    if len(times) > 1:
+        chart_hz = len(times) / max(1e-6, times[-1] - times[0])
+    else:
+        chart_hz = CHART_SAMPLE_RATE_HZ
+
+    effective_window_s = CHART_SMOOTH_WINDOW_S * (1 + smoothing_level)
+    half_win = max(1, int(effective_window_s * chart_hz / 2))
+
+    for col in pressure_cols:
+        series[col] = _smooth_linear_regression(series[col], half_win)
 
 
 def _haversine_dist(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -1043,7 +1078,7 @@ STAGES: list[dict[str, Any]] = [
         "version": 1,
         "weight": 80,
         "steps": [normalize_channels, compute_distance, compute_derived,
-                  smooth_pressure, downsample_for_charts],
+                  downsample_for_charts, smooth_pressure],
     },
     {
         "name": "track_map",

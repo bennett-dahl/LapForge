@@ -33,7 +33,7 @@ from flask import (
     url_for,
 )
 
-from LapForge.parsers.pi_toolbox_export import load_pi_toolbox_export, read_file_metadata
+from LapForge.parsers.pi_toolbox_export import load_pi_toolbox_export, merge_parsed_outings, read_file_metadata
 from LapForge.models import CarDriver, Session, SessionType, TireSet, TrackSection, Weekend
 from LapForge.processing import (
     BAR_TO_PSI,
@@ -66,7 +66,7 @@ def create_app() -> Flask:
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.secret_key = app_config.flask_secret_key
-    app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
+    app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 
     app.config["GOOGLE_CLIENT_ID"] = app_config.google_client_id
     app.config["GOOGLE_CLIENT_SECRET"] = app_config.google_client_secret
@@ -85,6 +85,27 @@ def create_app() -> Flask:
     def _resolve_fp(session: Session) -> Path | None:
         """Resolve session's file_path to an absolute Path, or None."""
         return store.resolve_file_path(session.file_path)
+
+    def _load_session_files(session: Session) -> dict | None:
+        """Load all source files for a session, parse each, and merge."""
+        paths = store.resolve_file_paths(session.file_path)
+        if not paths or not all(p.exists() for p in paths):
+            return None
+        try:
+            parsed_list = [load_pi_toolbox_export(str(p)) for p in paths]
+        except Exception:
+            return None
+        if len(parsed_list) > 1:
+            parsed_list.sort(
+                key=lambda d: int((d.get("metadata") or {}).get("OutingNumber", 0))
+            )
+            return merge_parsed_outings(parsed_list)
+        return parsed_list[0] if parsed_list else None
+
+    def _all_source_files_exist(session: Session) -> bool:
+        """Check whether all source files for a session exist on disk."""
+        paths = store.resolve_file_paths(session.file_path)
+        return bool(paths) and all(p.exists() for p in paths)
 
     # ---- Preferences helpers ----
 
@@ -166,13 +187,7 @@ def create_app() -> Flask:
     def _get_parsed_for_session(session: Session) -> dict | None:
         if session.parsed_data:
             return session.parsed_data
-        fp = _resolve_fp(session)
-        if fp and fp.exists():
-            try:
-                return load_pi_toolbox_export(str(fp))
-            except Exception:
-                return None
-        return None
+        return _load_session_files(session)
 
     def _session_summary(parsed: dict, use_psi: bool, target_psi: float | None = None) -> dict:
         """Compute pressure summary from raw parsed rows (legacy v1 fallback)."""
@@ -892,12 +907,15 @@ def create_app() -> Flask:
             except ValueError:
                 session_type = SessionType.PRACTICE_1
             session_id = str(uuid.uuid4())
-            persistent_path = store.uploads_dir / f"{session_id}.txt"
-            relative_path = f"uploads/{session_id}.txt"
             import shutil
-            upload_path_str = request.form.get("upload_path")
-            if not upload_path_str or not Path(upload_path_str).exists():
-                return jsonify({"error": "Upload file missing. Please upload and parse again."}), 400
+
+            upload_paths = request.form.getlist("upload_path")
+            if not upload_paths:
+                single = request.form.get("upload_path")
+                upload_paths = [single] if single else []
+            upload_paths = [p for p in upload_paths if p and Path(p).exists()]
+            if not upload_paths:
+                return jsonify({"error": "Upload file(s) missing. Please upload and parse again."}), 400
 
             default_target = float(_get_preferences().get("default_target_pressure_psi", DEFAULT_TARGET_PSI))
 
@@ -918,10 +936,20 @@ def create_app() -> Flask:
 
             def _run_bg():
                 try:
+                    n_files = len(upload_paths)
                     with _bg_lock:
                         _bg_tasks[task_id]["pct"] = 5
-                        _bg_tasks[task_id]["stage"] = "Parsing file"
-                    parsed_data = load_pi_toolbox_export(upload_path_str)
+                        _bg_tasks[task_id]["stage"] = f"Parsing {n_files} file(s)"
+
+                    parsed_list = [load_pi_toolbox_export(p) for p in upload_paths]
+                    if len(parsed_list) > 1:
+                        parsed_list.sort(
+                            key=lambda d: int((d.get("metadata") or {}).get("OutingNumber", 0))
+                        )
+                        parsed_data = merge_parsed_outings(parsed_list)
+                    else:
+                        parsed_data = parsed_list[0]
+
                     with _bg_lock:
                         _bg_tasks[task_id]["pct"] = 10
                         _bg_tasks[task_id]["stage"] = "Processing"
@@ -938,8 +966,22 @@ def create_app() -> Flask:
                             _bg_tasks[task_id]["error"] = "Processing failed"
                             _bg_tasks[task_id]["done"] = True
                         return
-                    shutil.copy2(upload_path_str, persistent_path)
-                    Path(upload_path_str).unlink(missing_ok=True)
+
+                    if n_files == 1:
+                        persistent_path = store.uploads_dir / f"{session_id}.txt"
+                        relative_path = f"uploads/{session_id}.txt"
+                        shutil.copy2(upload_paths[0], persistent_path)
+                        Path(upload_paths[0]).unlink(missing_ok=True)
+                    else:
+                        rel_paths: list[str] = []
+                        for i, src in enumerate(upload_paths):
+                            dest = store.uploads_dir / f"{session_id}_{i}.txt"
+                            shutil.copy2(src, dest)
+                            Path(src).unlink(missing_ok=True)
+                            rel_paths.append(f"uploads/{session_id}_{i}.txt")
+                        import json as _json
+                        relative_path = _json.dumps(rel_paths)
+
                     session_obj = Session(
                         id=session_id,
                         car_driver_id=car_driver_id,
@@ -968,26 +1010,47 @@ def create_app() -> Flask:
             t.start()
             return jsonify({"task_id": task_id})
 
-        f = request.files.get("file")
-        if not f or not f.filename:
+        # --- Parse phase: accept one or more files ---
+        files = request.files.getlist("file")
+        if not files or not any(f.filename for f in files):
+            f = request.files.get("file")
+            files = [f] if f and f.filename else []
+        if not files:
             return jsonify({"error": "Select a file."}), 400
-        if not f.filename.lower().endswith(".txt"):
-            return jsonify({"error": "File must be .txt"}), 400
+        for f in files:
+            if not f.filename or not f.filename.lower().endswith(".txt"):
+                return jsonify({"error": f"File must be .txt: {f.filename}"}), 400
 
         import tempfile
-        path = Path(tempfile.gettempdir()) / f"tire_upload_{uuid.uuid4().hex}.txt"
+        temp_paths: list[str] = []
+        parsed_list: list[dict] = []
         try:
-            f.save(str(path))
-            parsed = load_pi_toolbox_export(path)
+            for f in files:
+                path = Path(tempfile.gettempdir()) / f"tire_upload_{uuid.uuid4().hex}.txt"
+                f.save(str(path))
+                parsed_list.append(load_pi_toolbox_export(path))
+                temp_paths.append(str(path))
         except Exception as e:
             return jsonify({"error": str(e)}), 400
-        meta = parsed.get("metadata") or {}
-        rows = parsed.get("rows") or []
-        lap_splits = parsed.get("lap_split_times") or []
+
+        if len(parsed_list) > 1:
+            parsed_list_sorted = sorted(
+                parsed_list,
+                key=lambda d: int((d.get("metadata") or {}).get("OutingNumber", 0)),
+            )
+            merged = merge_parsed_outings(parsed_list_sorted)
+        else:
+            merged = parsed_list[0]
+
+        meta = merged.get("metadata") or {}
+        rows = merged.get("rows") or []
+        lap_splits = merged.get("lap_split_times") or []
         return jsonify({
             "parsed": True,
             "metadata": meta,
-            "upload_path": str(path),
+            "upload_path": temp_paths[0] if temp_paths else "",
+            "upload_paths": temp_paths,
+            "file_count": len(temp_paths),
             "form_metadata": _upload_form_metadata(meta if isinstance(meta, dict) else {}),
             "row_count": len(rows),
             "lap_split_count": len(lap_splits),
@@ -1024,8 +1087,7 @@ def create_app() -> Flask:
         session = store.get_session(id)
         car_driver_id = session.car_driver_id if session else None
         if session:
-            resolved = store.resolve_file_path(session.file_path)
-            if resolved:
+            for resolved in store.resolve_file_paths(session.file_path):
                 try:
                     canon = resolved.resolve()
                     uploads_canon = store.uploads_dir.resolve()
@@ -1094,11 +1156,12 @@ def create_app() -> Flask:
     @app.route("/sessions/<id>/simplify", methods=["POST"])
     def session_simplify(id: str):
         session = store.get_session(id)
-        fp = _resolve_fp(session) if session else None
-        if not session or not fp or not fp.exists():
+        if not session or not _all_source_files_exist(session):
             return redirect(url_for("session_detail", id=id))
         try:
-            parsed = load_pi_toolbox_export(str(fp))
+            parsed = _load_session_files(session)
+            if parsed is None:
+                return redirect(url_for("session_detail", id=id))
             proc = session.parsed_data or {}
             level = int(proc.get("smoothing_level", 0)) + 1
             existing_blob = proc if isinstance(proc, dict) else None
@@ -1117,8 +1180,7 @@ def create_app() -> Flask:
     @app.route("/sessions/<id>/restore", methods=["POST"])
     def session_restore(id: str):
         session = store.get_session(id)
-        fp = _resolve_fp(session) if session else None
-        if not session or not fp or not fp.exists():
+        if not session or not _all_source_files_exist(session):
             return redirect(url_for("session_detail", id=id))
 
         stream_mode = request.form.get("stream") == "1" or request.args.get("stream") == "1"
@@ -1130,7 +1192,10 @@ def create_app() -> Flask:
                     _stale = stale_stages(existing) if existing else []
                     can_incremental = existing and "core" not in _stale and len(_stale) > 0
                     yield "PROGRESS:0\n"
-                    parsed = load_pi_toolbox_export(str(fp))
+                    parsed = _load_session_files(session)
+                    if parsed is None:
+                        yield "ERROR:Source files not found\n"
+                        return
                     yield "PROGRESS:5\n"
 
                     processed = None
@@ -1163,7 +1228,9 @@ def create_app() -> Flask:
             return Response(stream_with_context(restore_stream()), content_type="text/plain; charset=utf-8")
 
         try:
-            parsed = load_pi_toolbox_export(str(fp))
+            parsed = _load_session_files(session)
+            if parsed is None:
+                return redirect(url_for("session_detail", id=id))
             existing_blob = session.parsed_data if isinstance(session.parsed_data, dict) else None
             processed = process_session(
                 parsed,
@@ -1938,9 +2005,8 @@ def create_app() -> Flask:
         tire_set = store.get_tire_set(session.tire_set_id) if session.tire_set_id else None
         is_v2 = isinstance(session.parsed_data, dict) and session.parsed_data.get("version") == 2
 
-        _detail_fp = _resolve_fp(session)
         _needs_reprocess = False
-        can_reprocess = bool(_detail_fp and _detail_fp.exists())
+        can_reprocess = _all_source_files_exist(session)
         if is_v2 and can_reprocess:
             _needs_reprocess = check_needs_reprocess(session.parsed_data)
 
@@ -1984,10 +2050,10 @@ def create_app() -> Flask:
                 session_summary["duration_s"] = round(times[-1] - times[0], 2) if len(times) > 1 else 0
             outing_meta = session.parsed_data.get("file_metadata") or {}
             if not outing_meta:
-                fp_check = _resolve_fp(session)
-                if fp_check and fp_check.exists():
+                first_fp = store.resolve_file_path(session.file_path)
+                if first_fp and first_fp.exists():
                     try:
-                        outing_meta = read_file_metadata(str(fp_check))
+                        outing_meta = read_file_metadata(str(first_fp))
                     except Exception:
                         outing_meta = {}
             session_summary["file_metadata"] = outing_meta
@@ -2220,9 +2286,7 @@ def create_app() -> Flask:
         s = store.get_session(sid)
         if not s:
             return jsonify({"error": "Not found"}), 404
-        # Delete upload file if it exists and is safely under uploads_dir
-        resolved = store.resolve_file_path(s.file_path)
-        if resolved:
+        for resolved in store.resolve_file_paths(s.file_path):
             try:
                 canon = resolved.resolve()
                 uploads_canon = store.uploads_dir.resolve()
@@ -2235,13 +2299,12 @@ def create_app() -> Flask:
 
     @app.route("/api/sessions/<sid>/reprocess", methods=["POST"])
     def api_session_reprocess(sid: str):
-        """Re-run processing from the original export file; stream SSE progress."""
+        """Re-run processing from the original export file(s); stream SSE progress."""
         session = store.get_session(sid)
         if not session:
             return jsonify({"error": "Not found"}), 404
-        fp = _resolve_fp(session)
-        if not fp or not fp.exists():
-            return jsonify({"error": "Source file not found"}), 400
+        if not _all_source_files_exist(session):
+            return jsonify({"error": "Source file(s) not found"}), 400
 
         def generate():
             try:
@@ -2249,7 +2312,10 @@ def create_app() -> Flask:
                 _stale = stale_stages(existing) if existing else []
                 can_incremental = existing and "core" not in _stale and len(_stale) > 0
                 yield f"data: {json.dumps({'event': 'progress', 'pct': 0, 'stage': 'Loading export'})}\n\n"
-                parsed = load_pi_toolbox_export(str(fp))
+                parsed = _load_session_files(session)
+                if parsed is None:
+                    yield f"data: {json.dumps({'event': 'error', 'message': 'Failed to load source files'})}\n\n"
+                    return
                 yield f"data: {json.dumps({'event': 'progress', 'pct': 5, 'stage': 'Parsing'})}\n\n"
 
                 processed = None
