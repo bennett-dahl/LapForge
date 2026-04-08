@@ -88,6 +88,7 @@ export default function SessionsPage() {
               <th>Added</th>
               <th>Laps</th>
               <th>Temps</th>
+              <th>Weather</th>
               <th></th>
             </tr>
           </thead>
@@ -119,6 +120,7 @@ export default function SessionsPage() {
                     {s.ambient_temp_c != null && s.track_temp_c != null && ' / '}
                     {s.track_temp_c != null && `${s.track_temp_c}${tempLabel('c')}`}
                   </td>
+                  <td>{s.weather_condition || '—'}</td>
                   <td className="actions">
                     <Link to={`/sessions/${s.id}`}><Button variant="ghost" size="sm">View</Button></Link>
                     <Button variant="danger" size="sm" onClick={() => {

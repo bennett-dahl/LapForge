@@ -848,6 +848,18 @@ def create_app() -> Flask:
     def plan_page(weekend_id: str, car_driver_id: str):
         return _serve_spa()
 
+    @app.route("/setups")
+    def setups_list():
+        return _serve_spa()
+
+    @app.route("/setups/new")
+    def setups_new():
+        return _serve_spa()
+
+    @app.route("/setups/<setup_id>")
+    def setup_detail_page(setup_id: str):
+        return _serve_spa()
+
     # ---- Upload ----
 
     def _upload_form_metadata(outing_meta: dict[str, str]) -> dict[str, str]:
@@ -1054,6 +1066,7 @@ def create_app() -> Flask:
         session.track_temp_c = _temp_c_from_form(
             request.form.get("temp_unit"), request.form.get("track_temp_c"),
         )
+        session.weather_condition = request.form.get("weather_condition") or None
         session.tire_set_id = request.form.get("tire_set_id") or None
         session.roll_out_pressure_fl = _safe_float(request.form.get("roll_out_pressure_fl"))
         session.roll_out_pressure_fr = _safe_float(request.form.get("roll_out_pressure_fr"))
@@ -1690,7 +1703,7 @@ def create_app() -> Flask:
             "checklist", "planning_mode", "qual_plan", "race_plan",
             "qual_lap_range", "race_stint_lap_range", "pressure_band_psi",
             "session_ids", "current_ambient_temp_c", "current_track_temp_c",
-            "notes",
+            "current_weather_condition", "notes",
         }
         kwargs = {k: v for k, v in data.items() if k in allowed}
         updated = store.update_plan(plan_id, **kwargs)
@@ -1778,6 +1791,7 @@ def create_app() -> Flask:
                 "roll_out_psi": {"fl": ro_fl, "fr": ro_fr, "rl": ro_rl, "rr": ro_rr},
                 "ambient_temp_c": sess.ambient_temp_c,
                 "track_temp_c": sess.track_temp_c,
+                "weather_condition": sess.weather_condition,
                 "tire_summary": tire_summary,
                 "bleed_events": sess.bleed_events,
                 "planning_tag": sess.planning_tag,
@@ -1791,6 +1805,72 @@ def create_app() -> Flask:
             "car_driver": car_driver.to_dict() if car_driver else None,
             "sessions": sessions_out,
         })
+
+    # ---------- Setups ----------
+
+    @app.route("/api/setups/list", methods=["GET"])
+    def api_setups_list():
+        car_driver_id = request.args.get("car_driver_id") or None
+        weekend_id = request.args.get("weekend_id") or None
+        setups = store.list_setups(car_driver_id=car_driver_id, weekend_id=weekend_id)
+        return jsonify([
+            {k: v for k, v in s.to_dict().items() if k != "data"}
+            for s in setups
+        ])
+
+    @app.route("/api/setups", methods=["POST"])
+    def api_setups_create():
+        data = request.get_json(silent=True) or {}
+        car_driver_id = (data.get("car_driver_id") or "").strip()
+        if not car_driver_id:
+            return jsonify({"error": "car_driver_id required"}), 400
+        s = store.add_setup(
+            car_driver_id=car_driver_id,
+            name=(data.get("name") or "").strip(),
+            data=data.get("data") or {},
+            weekend_id=data.get("weekend_id") or None,
+            session_id=data.get("session_id") or None,
+        )
+        return jsonify({"ok": True, "setup": s.to_dict()})
+
+    @app.route("/api/setups/<setup_id>/fork", methods=["POST"])
+    def api_setups_fork(setup_id: str):
+        data = request.get_json(silent=True) or {}
+        fork = store.fork_setup(
+            setup_id,
+            name=data.get("name"),
+            weekend_id=data.get("weekend_id"),
+            session_id=data.get("session_id"),
+        )
+        if not fork:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify({"ok": True, "setup": fork.to_dict()})
+
+    @app.route("/api/setups/<setup_id>", methods=["GET"])
+    def api_setups_get(setup_id: str):
+        s = store.get_setup(setup_id)
+        if not s:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(s.to_dict())
+
+    @app.route("/api/setups/<setup_id>", methods=["PATCH"])
+    def api_setups_update(setup_id: str):
+        s = store.get_setup(setup_id)
+        if not s:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        allowed = {"name", "weekend_id", "session_id", "data"}
+        kwargs = {k: v for k, v in data.items() if k in allowed}
+        updated = store.update_setup(setup_id, **kwargs)
+        return jsonify({"ok": True, "setup": updated.to_dict() if updated else s.to_dict()})
+
+    @app.route("/api/setups/<setup_id>", methods=["DELETE"])
+    def api_setups_delete(setup_id: str):
+        s = store.get_setup(setup_id)
+        if not s:
+            return jsonify({"error": "Not found"}), 404
+        store.delete_setup(setup_id)
+        return jsonify({"ok": True})
 
     @app.route("/api/sessions/<sid>/telemetry")
     def api_session_telemetry(sid: str):
@@ -2033,7 +2113,7 @@ def create_app() -> Flask:
                 session.session_type = matched
 
         for field in ("tire_set_id", "track_layout_id", "car_driver_id",
-                       "ambient_temp_c", "track_temp_c",
+                       "ambient_temp_c", "track_temp_c", "weather_condition",
                        "target_pressure_psi", "lap_count_notes",
                        "roll_out_pressure_fl", "roll_out_pressure_fr",
                        "roll_out_pressure_rl", "roll_out_pressure_rr",
@@ -2126,6 +2206,7 @@ def create_app() -> Flask:
                 "session_number": s.session_number,
                 "ambient_temp_c": s.ambient_temp_c,
                 "track_temp_c": s.track_temp_c,
+                "weather_condition": s.weather_condition,
                 "lap_count": lap_count,
                 "created_at": s.created_at,
             })

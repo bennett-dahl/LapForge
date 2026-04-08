@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { apiGet, apiPatch } from '../../api/client';
-import type { Plan, ChecklistStep, SessionListItem } from '../../types/models';
+import { apiGet, apiPatch, apiPost } from '../../api/client';
+import type { Plan, ChecklistStep, SessionListItem, SetupListItem, Setup } from '../../types/models';
+import { setupLabel } from '../../utils/setup';
 import Button from '../ui/Button';
 
 interface Props {
@@ -49,14 +50,48 @@ export default function PlanChecklist({ plan, carDriverId, onUpdate, refetchBoar
     if (!step) return;
 
     const newStepSids = step.session_ids.filter(id => id !== sessionId);
+    const newSetupIds = step.setup_ids ?? [];
     const updatedChecklist = plan.checklist.map(s =>
       s.key === stepKey ? {
         ...s,
         session_ids: newStepSids,
-        status: newStepSids.length > 0 ? 'linked' as const : 'not_started' as const,
+        status: (newStepSids.length > 0 || newSetupIds.length > 0) ? 'linked' as const : 'not_started' as const,
       } : s,
     );
     onUpdate({ checklist: updatedChecklist } as Partial<Plan>);
+  }
+
+  function linkSetupToStep(stepKey: string, setupId: string) {
+    const step = plan.checklist.find(s => s.key === stepKey);
+    if (!step) return;
+    const newSetupIds = [...new Set([...(step.setup_ids ?? []), setupId])];
+    const updatedChecklist = plan.checklist.map(s =>
+      s.key === stepKey ? { ...s, setup_ids: newSetupIds, status: 'linked' as const } : s,
+    );
+    onUpdate({ checklist: updatedChecklist } as Partial<Plan>);
+  }
+
+  function unlinkSetupFromStep(stepKey: string, setupId: string) {
+    const step = plan.checklist.find(s => s.key === stepKey);
+    if (!step) return;
+    const newSetupIds = (step.setup_ids ?? []).filter(id => id !== setupId);
+    const updatedChecklist = plan.checklist.map(s =>
+      s.key === stepKey ? {
+        ...s,
+        setup_ids: newSetupIds,
+        status: (step.session_ids.length > 0 || newSetupIds.length > 0) ? 'linked' as const : 'not_started' as const,
+      } : s,
+    );
+    onUpdate({ checklist: updatedChecklist } as Partial<Plan>);
+  }
+
+  function stepCountLabel(step: ChecklistStep): string | null {
+    const sc = step.session_ids.length;
+    const su = (step.setup_ids ?? []).length;
+    if (sc === 0 && su === 0) return null;
+    if (sc > 0 && su === 0) return `${sc}`;
+    if (sc === 0 && su > 0) return `${su} setup${su > 1 ? 's' : ''}`;
+    return `${sc} · ${su}`;
   }
 
   return (
@@ -67,6 +102,7 @@ export default function PlanChecklist({ plan, carDriverId, onUpdate, refetchBoar
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {plan.checklist.map(step => {
           const isExpanded = expandedStep === step.key;
+          const countLabel = stepCountLabel(step);
           return (
             <div key={step.key}>
               <button
@@ -81,9 +117,9 @@ export default function PlanChecklist({ plan, carDriverId, onUpdate, refetchBoar
               >
                 <StatusIcon status={step.status} required={step.required} />
                 <span style={{ flex: 1, fontSize: 13 }}>{step.label}</span>
-                {step.session_ids.length > 0 && (
+                {countLabel && (
                   <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    {step.session_ids.length}
+                    {countLabel}
                   </span>
                 )}
                 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
@@ -95,8 +131,10 @@ export default function PlanChecklist({ plan, carDriverId, onUpdate, refetchBoar
                 <ExpandedStep
                   step={step}
                   carDriverId={carDriverId}
-                  onLink={(sid) => linkSessionToStep(step.key, sid)}
-                  onUnlink={(sid) => unlinkSessionFromStep(step.key, sid)}
+                  onLinkSession={(sid) => linkSessionToStep(step.key, sid)}
+                  onUnlinkSession={(sid) => unlinkSessionFromStep(step.key, sid)}
+                  onLinkSetup={(sid) => linkSetupToStep(step.key, sid)}
+                  onUnlinkSetup={(sid) => unlinkSetupFromStep(step.key, sid)}
                   onNotesChange={(notes) => updateStep(step.key, { notes })}
                 />
               )}
@@ -129,25 +167,52 @@ function StatusIcon({ status, required }: { status: string; required: boolean })
   return <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>○</span>;
 }
 
-function ExpandedStep({ step, carDriverId, onLink, onUnlink, onNotesChange }: {
+function ExpandedStep({ step, carDriverId, onLinkSession, onUnlinkSession, onLinkSetup, onUnlinkSetup, onNotesChange }: {
   step: ChecklistStep;
   carDriverId: string;
-  onLink: (sid: string) => void;
-  onUnlink: (sid: string) => void;
+  onLinkSession: (sid: string) => void;
+  onUnlinkSession: (sid: string) => void;
+  onLinkSetup: (sid: string) => void;
+  onUnlinkSetup: (sid: string) => void;
   onNotesChange: (notes: string) => void;
 }) {
-  const [showPicker, setShowPicker] = useState(false);
+  const navigate = useNavigate();
+  const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [showSetupPicker, setShowSetupPicker] = useState(false);
 
   const { data: allSessions = [] } = useQuery({
     queryKey: ['sessions-list'],
     queryFn: () => apiGet<SessionListItem[]>('/api/sessions/list'),
-    enabled: showPicker,
+    enabled: showSessionPicker,
   });
 
-  const available = allSessions.filter(s => !step.session_ids.includes(s.id));
+  const { data: allSetups = [] } = useQuery({
+    queryKey: ['setups-list', carDriverId],
+    queryFn: () => apiGet<SetupListItem[]>(`/api/setups/list?car_driver_id=${carDriverId}`),
+  });
+
+  const availableSessions = allSessions.filter(s => !step.session_ids.includes(s.id));
+  const setupIds = step.setup_ids ?? [];
+  const availableSetups = allSetups.filter(s => !setupIds.includes(s.id));
+
+  async function handleModifySetup() {
+    let sourceId: string | undefined;
+    if (setupIds.length > 0) {
+      sourceId = setupIds[setupIds.length - 1];
+    } else if (allSetups.length > 0) {
+      sourceId = allSetups[0].id;
+    }
+    if (!sourceId) return;
+    const res = await apiPost<{ ok: boolean; setup: Setup }>(`/api/setups/${sourceId}/fork`, {});
+    if (res.ok && res.setup) {
+      onLinkSetup(res.setup.id);
+      navigate(`/setups/${res.setup.id}`);
+    }
+  }
 
   return (
     <div style={{ padding: '4px 8px 8px 28px', fontSize: 12 }}>
+      {/* Linked sessions */}
       {step.session_ids.length > 0 && (
         <div style={{ marginBottom: 6 }}>
           {step.session_ids.map(sid => (
@@ -156,7 +221,7 @@ function ExpandedStep({ step, carDriverId, onLink, onUnlink, onNotesChange }: {
                 {sid.slice(0, 8)}...
               </Link>
               <button
-                onClick={() => onUnlink(sid)}
+                onClick={() => onUnlinkSession(sid)}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11 }}
               >
                 ×
@@ -166,9 +231,34 @@ function ExpandedStep({ step, carDriverId, onLink, onUnlink, onNotesChange }: {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-        <Button size="sm" variant="ghost" onClick={() => setShowPicker(!showPicker)}>
-          {showPicker ? 'Cancel' : 'Pick session'}
+      {/* Linked setups */}
+      {setupIds.length > 0 && (
+        <div style={{ marginBottom: 6 }}>
+          {setupIds.map(sid => {
+            const s = allSetups.find(x => x.id === sid);
+            const label = s ? setupLabel(s, allSessions) : sid.slice(0, 8);
+            return (
+              <div key={sid} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                {s?.parent_id && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>↳</span>}
+                <Link to={`/setups/${sid}`} style={{ color: 'var(--primary)', fontSize: 12 }}>
+                  {label}
+                </Link>
+                <button
+                  onClick={() => onUnlinkSetup(sid)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11 }}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Session buttons */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+        <Button size="sm" variant="ghost" onClick={() => { setShowSessionPicker(!showSessionPicker); setShowSetupPicker(false); }}>
+          {showSessionPicker ? 'Cancel' : 'Pick session'}
         </Button>
         <Link to={`/upload?car_driver_id=${carDriverId}&checklist_step=${step.key}`}>
           <Button size="sm" variant="ghost">Upload</Button>
@@ -180,20 +270,60 @@ function ExpandedStep({ step, carDriverId, onLink, onUnlink, onNotesChange }: {
         )}
       </div>
 
-      {showPicker && (
+      {/* Session picker */}
+      {showSessionPicker && (
         <div style={{ maxHeight: 120, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4, marginBottom: 6 }}>
-          {available.length === 0 ? (
+          {availableSessions.length === 0 ? (
             <div style={{ padding: 8, color: 'var(--text-muted)' }}>No sessions available</div>
           ) : (
-            available.map(s => (
+            availableSessions.map(s => (
               <div
                 key={s.id}
-                onClick={() => { onLink(s.id); setShowPicker(false); }}
+                onClick={() => { onLinkSession(s.id); setShowSessionPicker(false); }}
                 style={{ padding: '4px 8px', cursor: 'pointer', fontSize: 12 }}
                 onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg)')}
                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               >
                 {s.label || `${s.track} — ${s.id.slice(0, 8)}`}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Setup buttons */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+        <Button size="sm" variant="ghost" onClick={() => { setShowSetupPicker(!showSetupPicker); setShowSessionPicker(false); }}>
+          {showSetupPicker ? 'Cancel' : 'Pick setup'}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={handleModifySetup}
+          disabled={allSetups.length === 0}
+        >
+          Modify setup
+        </Button>
+        <Link to={`/setups/new?car_driver_id=${carDriverId}`}>
+          <Button size="sm" variant="ghost">New setup</Button>
+        </Link>
+      </div>
+
+      {/* Setup picker */}
+      {showSetupPicker && (
+        <div style={{ maxHeight: 120, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4, marginBottom: 6 }}>
+          {availableSetups.length === 0 ? (
+            <div style={{ padding: 8, color: 'var(--text-muted)' }}>No setups available</div>
+          ) : (
+            availableSetups.map(s => (
+              <div
+                key={s.id}
+                onClick={() => { onLinkSetup(s.id); setShowSetupPicker(false); }}
+                style={{ padding: '4px 8px', cursor: 'pointer', fontSize: 12 }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >
+                {setupLabel(s, allSessions)}
               </div>
             ))
           )}

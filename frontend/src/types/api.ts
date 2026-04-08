@@ -67,6 +67,7 @@ export interface SessionSummary {
   session_number: string;
   ambient_temp_c: number | null;
   track_temp_c: number | null;
+  weather_condition: string | null;
   lap_count: number;
   created_at: string;
 }

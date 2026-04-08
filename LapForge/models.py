@@ -1,4 +1,4 @@
-"""Data models for 992 Cup Tire Pressure tool: Car-Driver, Session, Weekend, Plan, TireSet."""
+"""Data models for 992 Cup Tire Pressure tool: Car-Driver, Session, Weekend, Plan, TireSet, Setup."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from enum import Enum
 from typing import Any
 
 DEFAULT_CHECKLIST_STEPS: list[dict[str, Any]] = [
-    {"key": "baseline", "label": "Baseline", "required": True, "status": "not_started", "session_ids": [], "notes": ""},
-    {"key": "stabilization", "label": "Stabilization reference", "required": True, "status": "not_started", "session_ids": [], "notes": ""},
-    {"key": "stagger", "label": "Second set / stagger", "required": False, "status": "not_started", "session_ids": [], "notes": ""},
-    {"key": "qual_validation", "label": "Qual validation", "required": False, "status": "not_started", "session_ids": [], "notes": ""},
-    {"key": "race_validation", "label": "Race validation", "required": False, "status": "not_started", "session_ids": [], "notes": ""},
-    {"key": "qual_plan", "label": "Qual plan", "required": True, "status": "not_started", "session_ids": [], "notes": ""},
-    {"key": "race_plan", "label": "Race plan", "required": True, "status": "not_started", "session_ids": [], "notes": ""},
+    {"key": "baseline", "label": "Baseline", "required": True, "status": "not_started", "session_ids": [], "setup_ids": [], "notes": ""},
+    {"key": "stabilization", "label": "Stabilization reference", "required": True, "status": "not_started", "session_ids": [], "setup_ids": [], "notes": ""},
+    {"key": "stagger", "label": "Second set / stagger", "required": False, "status": "not_started", "session_ids": [], "setup_ids": [], "notes": ""},
+    {"key": "qual_validation", "label": "Qual validation", "required": False, "status": "not_started", "session_ids": [], "setup_ids": [], "notes": ""},
+    {"key": "race_validation", "label": "Race validation", "required": False, "status": "not_started", "session_ids": [], "setup_ids": [], "notes": ""},
+    {"key": "qual_plan", "label": "Qual plan", "required": True, "status": "not_started", "session_ids": [], "setup_ids": [], "notes": ""},
+    {"key": "race_plan", "label": "Race plan", "required": True, "status": "not_started", "session_ids": [], "setup_ids": [], "notes": ""},
 ]
 
 
@@ -97,6 +97,7 @@ class Session:
     session_number: str
     ambient_temp_c: float | None = None
     track_temp_c: float | None = None
+    weather_condition: str | None = None
     tire_set_id: str | None = None
     roll_out_pressure_fl: float | None = None  # bar
     roll_out_pressure_fr: float | None = None
@@ -123,6 +124,7 @@ class Session:
             "session_number": self.session_number,
             "ambient_temp_c": self.ambient_temp_c,
             "track_temp_c": self.track_temp_c,
+            "weather_condition": self.weather_condition,
             "tire_set_id": self.tire_set_id,
             "roll_out_pressure_fl": self.roll_out_pressure_fl,
             "roll_out_pressure_fr": self.roll_out_pressure_fr,
@@ -158,6 +160,7 @@ class Session:
             session_number=str(d.get("session_number", "")),
             ambient_temp_c=d.get("ambient_temp_c"),
             track_temp_c=d.get("track_temp_c"),
+            weather_condition=d.get("weather_condition"),
             tire_set_id=d.get("tire_set_id"),
             roll_out_pressure_fl=d.get("roll_out_pressure_fl"),
             roll_out_pressure_fr=d.get("roll_out_pressure_fr"),
@@ -220,6 +223,7 @@ class Plan:
     pressure_band_psi: float = 0.5
     current_ambient_temp_c: float | None = None
     current_track_temp_c: float | None = None
+    current_weather_condition: str | None = None
     created_at: str = ""
     notes: str = ""
 
@@ -238,6 +242,7 @@ class Plan:
             "pressure_band_psi": self.pressure_band_psi,
             "current_ambient_temp_c": self.current_ambient_temp_c,
             "current_track_temp_c": self.current_track_temp_c,
+            "current_weather_condition": self.current_weather_condition,
             "created_at": self.created_at,
             "notes": self.notes,
         }
@@ -270,6 +275,7 @@ class Plan:
             pressure_band_psi=float(d.get("pressure_band_psi") or 0.5),
             current_ambient_temp_c=d.get("current_ambient_temp_c"),
             current_track_temp_c=d.get("current_track_temp_c"),
+            current_weather_condition=d.get("current_weather_condition"),
             created_at=str(d.get("created_at", "")),
             notes=str(d.get("notes") or ""),
         )
@@ -379,4 +385,53 @@ class SavedComparison:
             id=str(d["id"]),
             name=str(d.get("name", "")),
             session_ids=list(d.get("session_ids", [])),
+        )
+
+
+@dataclass
+class Setup:
+    """Chassis/alignment setup record (alignment, corner weights, wing angles)."""
+
+    id: str
+    car_driver_id: str
+    name: str = ""
+    weekend_id: str | None = None
+    session_id: str | None = None
+    parent_id: str | None = None
+    data: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+    updated_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "car_driver_id": self.car_driver_id,
+            "name": self.name,
+            "weekend_id": self.weekend_id,
+            "session_id": self.session_id,
+            "parent_id": self.parent_id,
+            "data": dict(self.data),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Setup:
+        import json as _json
+        raw_data = d.get("data") or d.get("data_json") or "{}"
+        if isinstance(raw_data, str):
+            try:
+                raw_data = _json.loads(raw_data)
+            except (ValueError, TypeError):
+                raw_data = {}
+        return cls(
+            id=str(d["id"]),
+            car_driver_id=str(d["car_driver_id"]),
+            name=str(d.get("name") or ""),
+            weekend_id=d.get("weekend_id"),
+            session_id=d.get("session_id"),
+            parent_id=d.get("parent_id"),
+            data=raw_data if isinstance(raw_data, dict) else {},
+            created_at=str(d.get("created_at") or ""),
+            updated_at=str(d.get("updated_at") or ""),
         )

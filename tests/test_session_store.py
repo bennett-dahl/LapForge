@@ -13,6 +13,7 @@ from LapForge.models import (
     SavedComparison,
     Session,
     SessionType,
+    Setup,
     TireSet,
     TrackLayout,
     TrackSection,
@@ -122,11 +123,13 @@ class TestSessionCRUD:
 
     def test_add_and_get(self, store):
         cd = store.add_car_driver("911", "Alice")
-        s = self._make_session(store, cd.id, track="Laguna Seca")
+        s = self._make_session(store, cd.id, track="Laguna Seca",
+                               weather_condition="Overcast")
         got = store.get_session(s.id)
         assert got is not None
         assert got.track == "Laguna Seca"
         assert got.session_type is SessionType.PRACTICE_1
+        assert got.weather_condition == "Overcast"
 
     def test_created_at_auto_set(self, store):
         cd = store.add_car_driver("911", "Alice")
@@ -162,10 +165,12 @@ class TestSessionCRUD:
         s = self._make_session(store, cd.id, track="Old")
         s.track = "New"
         s.target_pressure_psi = 26.0
+        s.weather_condition = "Heavy Rain"
         store.update_session(s)
         got = store.get_session(s.id)
         assert got.track == "New"
         assert got.target_pressure_psi == 26.0
+        assert got.weather_condition == "Heavy Rain"
 
     def test_planning_tag_and_bleed_events(self, store):
         cd = store.add_car_driver("911", "Alice")
@@ -285,11 +290,13 @@ class TestPlanCRUD:
                                     planning_mode="qual",
                                     session_ids=["s1", "s2"],
                                     qual_plan={"fl": 24.5},
-                                    pressure_band_psi=0.3)
+                                    pressure_band_psi=0.3,
+                                    current_weather_condition="Med Rain")
         assert updated.planning_mode == "qual"
         assert updated.session_ids == ["s1", "s2"]
         assert updated.qual_plan["fl"] == 24.5
         assert updated.pressure_band_psi == 0.3
+        assert updated.current_weather_condition == "Med Rain"
 
     def test_plan_notes_persist(self, store):
         cd = store.add_car_driver("911", "Alice")
@@ -451,6 +458,152 @@ class TestDashboardLayouts:
         store.save_compare_dashboard_layout(sc.id, layout)
         got = store.get_compare_dashboard_layout(sc.id)
         assert got == layout
+
+
+class TestSetupCRUD:
+    def test_setup_crud(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        s = store.add_setup(
+            car_driver_id=cd.id,
+            name="Race setup",
+            data={"before": {"fl": {"camber": -3.2}}},
+            weekend_id=w.id,
+            session_id=None,
+        )
+        assert len(s.id) == 36
+        assert s.name == "Race setup"
+        assert s.car_driver_id == cd.id
+        assert s.weekend_id == w.id
+        assert s.data["before"]["fl"]["camber"] == -3.2
+        assert s.created_at
+        assert s.updated_at
+
+        got = store.get_setup(s.id)
+        assert got is not None
+        assert got.name == "Race setup"
+        assert got.data["before"]["fl"]["camber"] == -3.2
+
+        all_setups = store.list_setups()
+        assert len(all_setups) == 1
+
+        updated = store.update_setup(s.id, name="Updated", data={"after": {"fl": {"camber": -3.0}}}, session_id="fake-sid")
+        assert updated.name == "Updated"
+        assert updated.data["after"]["fl"]["camber"] == -3.0
+        assert updated.session_id == "fake-sid"
+        assert updated.updated_at > s.updated_at
+
+        store.delete_setup(s.id)
+        assert store.get_setup(s.id) is None
+
+    def test_list_setups_filtered(self, store):
+        cd1 = store.add_car_driver("911", "Alice")
+        cd2 = store.add_car_driver("718", "Bob")
+        w = store.add_weekend("Spring")
+        import time
+        store.add_setup(car_driver_id=cd1.id, name="A", weekend_id=w.id)
+        time.sleep(0.01)
+        store.add_setup(car_driver_id=cd1.id, name="B")
+        store.add_setup(car_driver_id=cd2.id, name="C")
+
+        by_cd1 = store.list_setups(car_driver_id=cd1.id)
+        assert len(by_cd1) == 2
+        assert by_cd1[0].name == "B"  # created_at DESC
+
+        by_weekend = store.list_setups(weekend_id=w.id)
+        assert len(by_weekend) == 1
+        assert by_weekend[0].name == "A"
+
+    def test_delete_setup_scrubs_checklist(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        s = store.add_setup(car_driver_id=cd.id)
+        p = store.add_plan(cd.id, w.id)
+        checklist = p.checklist
+        checklist[0]["setup_ids"] = [s.id]
+        store.update_plan(p.id, checklist=checklist)
+
+        store.delete_setup(s.id)
+        got = store.get_plan(p.id)
+        assert s.id not in got.checklist[0].get("setup_ids", [])
+
+    def test_checklist_normalization_adds_setup_ids(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        p = store.add_plan(cd.id, w.id)
+        with store._conn() as c:
+            old_checklist = [{"key": "baseline", "label": "Baseline", "required": True, "status": "not_started", "session_ids": [], "notes": ""}]
+            c.execute("UPDATE plans SET checklist_json = ? WHERE id = ?",
+                      (json.dumps(old_checklist), p.id))
+        got = store.get_plan(p.id)
+        for step in got.checklist:
+            assert "setup_ids" in step
+            assert step["setup_ids"] == []
+
+    def test_fork_setup_uses_after(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        source = store.add_setup(
+            car_driver_id=cd.id,
+            name="Original",
+            data={"before": {"fl": {"camber": -3.0}}, "after": {"fl": {"camber": -2.8}}},
+        )
+        fork = store.fork_setup(source.id)
+        assert fork is not None
+        assert fork.parent_id == source.id
+        assert fork.car_driver_id == cd.id
+        assert fork.data.get("before") == {"fl": {"camber": -2.8}}
+        assert "after" not in fork.data
+        assert fork.name == "Original"
+
+    def test_fork_setup_falls_back_to_before(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        source = store.add_setup(
+            car_driver_id=cd.id,
+            data={"before": {"fl": {"camber": -3.0}}},
+        )
+        fork = store.fork_setup(source.id)
+        assert fork.data.get("before") == {"fl": {"camber": -3.0}}
+
+    def test_fork_setup_empty_source(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        source = store.add_setup(car_driver_id=cd.id, data={})
+        fork = store.fork_setup(source.id)
+        assert fork.data.get("before") == {}
+
+    def test_fork_setup_source_not_found(self, store):
+        result = store.fork_setup("nonexistent-id")
+        assert result is None
+
+    def test_fork_setup_inherits_name(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        source = store.add_setup(car_driver_id=cd.id, name="My Setup")
+        fork = store.fork_setup(source.id)
+        assert fork.name == "My Setup"
+
+    def test_delete_weekend_nullifies_setup_weekend_id(self, store):
+        cd = store.add_car_driver("911", "Alice")
+        w = store.add_weekend("Spring")
+        s = store.add_setup(car_driver_id=cd.id, weekend_id=w.id)
+        store.delete_weekend(w.id)
+        got = store.get_setup(s.id)
+        assert got is not None
+        assert got.weekend_id is None
+
+    def test_delete_session_nullifies_setup_session_id(self, store):
+        import uuid
+        cd = store.add_car_driver("911", "Alice")
+        sess = Session(
+            id=str(uuid.uuid4()), car_driver_id=cd.id,
+            session_type=SessionType.PRACTICE_1,
+            track="T", driver="A", car="911",
+            outing_number="1", session_number="1",
+        )
+        store.add_session(sess)
+        s = store.add_setup(car_driver_id=cd.id, session_id=sess.id)
+        store.delete_session(sess.id)
+        got = store.get_setup(s.id)
+        assert got is not None
+        assert got.session_id is None
 
 
 class TestResolveFilePath:

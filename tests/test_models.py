@@ -75,12 +75,15 @@ class TestSession:
             track="Laguna Seca", driver="Test", car="911",
             outing_number="1", session_number="3",
             ambient_temp_c=25.0, target_pressure_psi=27.0,
+            weather_condition="Light Rain",
         )
         d = s.to_dict()
         assert d["session_type"] == "Qualifying"
+        assert d["weather_condition"] == "Light Rain"
         s2 = Session.from_dict(d)
         assert s2.session_type is SessionType.QUALIFYING
         assert s2.target_pressure_psi == 27.0
+        assert s2.weather_condition == "Light Rain"
 
     def test_from_dict_defaults(self):
         s = Session.from_dict({
@@ -91,6 +94,7 @@ class TestSession:
         assert s.parsed_data is None
         assert s.planning_tag is None
         assert s.bleed_events == []
+        assert s.weather_condition is None
 
     def test_bleed_events_round_trip(self):
         s = Session(
@@ -128,8 +132,10 @@ class TestPlan:
         p = Plan(id="p1", car_driver_id="cd1", weekend_id="w1",
                  session_ids=["s1", "s2"], planning_mode="qual",
                  qual_plan={"fl": 24.5, "fr": 24.5, "rl": 22.0, "rr": 22.0, "target": 30},
-                 pressure_band_psi=0.3, notes="Bring rain tires")
+                 pressure_band_psi=0.3, notes="Bring rain tires",
+                 current_weather_condition="Overcast")
         d = p.to_dict()
+        assert d["current_weather_condition"] == "Overcast"
         p2 = Plan.from_dict(d)
         assert p2.session_ids == ["s1", "s2"]
         assert p2.planning_mode == "qual"
@@ -137,6 +143,7 @@ class TestPlan:
         assert p2.pressure_band_psi == 0.3
         assert p2.qual_lap_range == [2, 3]
         assert p2.notes == "Bring rain tires"
+        assert p2.current_weather_condition == "Overcast"
 
     def test_defaults(self):
         p = Plan.from_dict({"id": "p2", "car_driver_id": "cd1", "weekend_id": "w1"})
@@ -145,6 +152,7 @@ class TestPlan:
         assert p.checklist == []
         assert p.pressure_band_psi == 0.5
         assert p.current_ambient_temp_c is None
+        assert p.current_weather_condition is None
         assert p.notes == ""
 
     def test_json_string_parsing(self):

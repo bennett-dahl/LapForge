@@ -15,6 +15,8 @@ import CompareDashboardPage from './pages/CompareDashboardPage';
 import PlanListPage from './pages/PlanListPage';
 import PlanRedirect from './pages/PlanRedirect';
 import PlanPage from './pages/PlanPage';
+import SetupsPage from './pages/SetupsPage';
+import SetupDetailPage from './pages/SetupDetailPage';
 import ElectronUpdateToast from './components/ui/ElectronUpdateToast';
 import UploadBackgroundPoller from './components/UploadBackgroundPoller';
 
@@ -37,6 +39,9 @@ export default function App() {
           <Route path="plan" element={<PlanListPage />} />
           <Route path="plan/:weekendId" element={<PlanRedirect />} />
           <Route path="plan/:weekendId/:carDriverId" element={<PlanPage />} />
+          <Route path="setups" element={<SetupsPage />} />
+          <Route path="setups/new" element={<SetupDetailPage />} />
+          <Route path="setups/:id" element={<SetupDetailPage />} />
           <Route path="compare" element={<ComparePage />} />
           <Route path="compare/:id" element={<CompareDashboardPage />} />
         </Route>

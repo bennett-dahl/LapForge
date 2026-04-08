@@ -226,6 +226,7 @@ class TestSessionAPI:
         assert "sessions" in data
         assert "car_drivers" in data
         assert len(data["sessions"]) >= 1
+        assert "weather_condition" in data["sessions"][0]
 
     def test_session_detail(self, loaded_client):
         client, _, _, session = loaded_client
@@ -275,13 +276,18 @@ class TestSessionAPI:
         client, store, _, session = loaded_client
         resp = client.patch(
             f"/api/sessions/{session.id}",
-            data=json.dumps({"ambient_temp_c": 25.0, "lap_count_notes": "Good grip"}),
+            data=json.dumps({
+                "ambient_temp_c": 25.0,
+                "lap_count_notes": "Good grip",
+                "weather_condition": "Light Rain",
+            }),
             content_type="application/json",
         )
         assert resp.status_code == 200
         got = store.get_session(session.id)
         assert got.ambient_temp_c == 25.0
         assert got.lap_count_notes == "Good grip"
+        assert got.weather_condition == "Light Rain"
 
     def test_session_patch_excluded_laps_on_main_route(self, loaded_client):
         client, store, _, session = loaded_client
@@ -696,6 +702,104 @@ class TestSessionListAPI:
         data = resp.get_json()
         assert len(data) >= 1
         assert "label" in data[0]
+
+
+# ---------------------------------------------------------------------------
+# Setup API
+# ---------------------------------------------------------------------------
+
+class TestSetupAPI:
+    def test_api_setups_list(self, client, flask_app):
+        store = flask_app.store
+        cd = store.add_car_driver("911", "Alice")
+        store.add_setup(car_driver_id=cd.id, name="Setup A")
+        resp = client.get("/api/setups/list")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data) >= 1
+        assert "parent_id" in data[0]
+        assert "session_id" in data[0]
+        assert "data" not in data[0]
+
+    def test_api_setups_create(self, client, flask_app):
+        cd = flask_app.store.add_car_driver("911", "Alice")
+        resp = client.post(
+            "/api/setups",
+            data=json.dumps({"car_driver_id": cd.id, "name": "New", "data": {"notes": "test"}}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["setup"]["name"] == "New"
+        assert data["setup"]["data"]["notes"] == "test"
+
+    def test_api_setups_create_missing_car_driver(self, client):
+        resp = client.post(
+            "/api/setups",
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+
+    def test_api_setups_get(self, client, flask_app):
+        cd = flask_app.store.add_car_driver("911", "Alice")
+        s = flask_app.store.add_setup(car_driver_id=cd.id, data={"before": {"fl": {"camber": -3.0}}})
+        resp = client.get(f"/api/setups/{s.id}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "data" in data
+        assert data["data"]["before"]["fl"]["camber"] == -3.0
+
+    def test_api_setups_get_not_found(self, client):
+        resp = client.get("/api/setups/nonexistent")
+        assert resp.status_code == 404
+
+    def test_api_setups_patch(self, client, flask_app):
+        cd = flask_app.store.add_car_driver("911", "Alice")
+        s = flask_app.store.add_setup(car_driver_id=cd.id, name="Old")
+        resp = client.patch(
+            f"/api/setups/{s.id}",
+            data=json.dumps({"name": "Updated", "data": {"after": {}}}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["setup"]["name"] == "Updated"
+        assert data["setup"]["updated_at"] > s.updated_at
+
+    def test_api_setups_delete(self, client, flask_app):
+        cd = flask_app.store.add_car_driver("911", "Alice")
+        s = flask_app.store.add_setup(car_driver_id=cd.id)
+        resp = client.delete(f"/api/setups/{s.id}")
+        assert resp.status_code == 200
+        resp2 = client.get(f"/api/setups/{s.id}")
+        assert resp2.status_code == 404
+
+    def test_api_setups_fork(self, client, flask_app):
+        cd = flask_app.store.add_car_driver("911", "Alice")
+        s = flask_app.store.add_setup(
+            car_driver_id=cd.id,
+            data={"before": {"fl": {"camber": -3.0}}, "after": {"fl": {"camber": -2.8}}},
+        )
+        resp = client.post(
+            f"/api/setups/{s.id}/fork",
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["setup"]["parent_id"] == s.id
+        assert data["setup"]["data"]["before"]["fl"]["camber"] == -2.8
+
+    def test_api_setups_fork_not_found(self, client):
+        resp = client.post(
+            "/api/setups/nonexistent/fork",
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

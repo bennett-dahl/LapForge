@@ -85,9 +85,55 @@
 
 ---
 
+#### 6. Weather page
+
+**Problem:** Ambient and track temperature matter for tire pressure planning and session notes, but there is **no dedicated place** in the app to view, record, or revisit **weather context** alongside a **weekend** or **track**. Data that exists today is scattered (session-level temps on import, plan fields) and there is no single “what were the conditions?” surface.
+
+**Goal:** A **Weather** page (and supporting data) that supports the pressure-planning workflow: see or enter conditions for an event, optionally tie readings to **weekend + track**, and leave room to **integrate with the plan board** and session detail later.
+
+**Scope (planning — pick in design):**
+- **Inputs:** Manual entry only (grid / timeline per day), vs. **external forecast API** (provider, rate limits, Electron vs web), vs. hybrid (manual override on top of fetched data).
+- **Persistence:** New table(s) or JSON on `weekends` / plans — versioned so sync and backup stay coherent.
+- **UI:** Route (e.g. `/weather`), nav entry, pick weekend + track, list or chart by day/session slot; respect app **temp unit** preference.
+- **Integration (later phases):** Surface summary chips on **Plan** or **Home**; optional pull of last session temps into plan context.
+
+**Key files:** `LapForge/models.py`, `LapForge/session_store.py`, `LapForge/app.py`, `frontend` router + new page, `frontend/src/layouts/AppLayout.tsx` (nav), `frontend/src/types/models.ts`.
+
+**Deliverable:** One-page product + data design (what we store, what we fetch, privacy/offline) before build.
+
+---
+
+#### 7. Setup tracking (chassis / alignment) + plan checklist integration
+
+**Problem:** There is no first-class **setup** in LapForge: chassis parameters (alignment, ride heights, corner weights, track width, etc.) that persist **independently of telemetry sessions** but should attach to **pressure-plan checklist steps** the same way **sessions** do today (`session_ids` per `ChecklistStep` in `PlanChecklist.tsx`).
+
+**Goal:** **Setups** are reusable, editable records (scoped at least to **car / driver**, optionally **weekend**). Each plan checklist step can **link zero or more setups** (pick from library + create new), mirroring the session link/unlink UX. Optional **detail view** to compare before/after or against a target template.
+
+**Reference — ShopFloor 2.0 (`C:\Coding\ShopFloor2.0`):** That app models **alignment** work, not a generic “setup” name, but the **captured fields** are a strong template for what LapForge might store (likely as JSON + metadata in SQLite):
+
+| Area | Fields (from ShopFloor models) |
+|------|--------------------------------|
+| **Alignment record** | `vehicle`, optional `workOrder`, optional `template`, `alignmentType`, `rideHeightReference`, **`before`** snapshot, **`after`** snapshot, **`intermediateSteps[]`** (`label` + snapshot each), `customerNotes`, `technicianNotes`, `accuracyRating` (1–5), `customerRating` (1–5), `rideHeightUnit` / `trackWidthUnit` (`mm` \| `in`), `completedBy`, `alignmentDate` |
+| **Snapshot** (before/after/target) | Per corner **FL / FR / RL / RR:** `camber` (°), `toe` (mm), `rideHeight`, `weightPercent`, `weightLbs`. **Vehicle-level:** `frontAxlePercent`, `rearAxlePercent`, `leftSidePercent`, `rightSidePercent`, `crossFLRRPercent`, `crossFRRLPercent`, `totalWeightLbs`, `trackWidthFront`, `trackWidthRear` |
+| **Template** (library target) | `make`, `model`, `year`, `alignmentType`, `rideHeightReference`, **`target`** snapshot (same shape as above), units, `notes` |
+
+LapForge does not need Mongo/work orders; map **vehicle → `car_driver_id`**, drop shop-only fields if irrelevant, and keep **snapshot JSON** aligned with the above shape for possible future import/export.
+
+**Integration (clean path):**
+- **Data:** New `setups` table (id, `car_driver_id`, optional `weekend_id`, name/label, `snapshot_json` or normalized columns, `created_at`, notes); optional `setup_templates` later mirroring ShopFloor templates.
+- **Plan:** Extend `checklist_json` steps with **`setup_ids: string[]`** (default `[]`), same patch/update flow as `session_ids`; aggregate list on plan for board if needed.
+- **UI:** `PlanChecklist` — “Pick setup” / “New setup” beside session actions; library route e.g. `/setups` (list + editor form for corner grid + totals).
+- **Sync/bundle:** Include new table/files in backup manifest rules like other entities.
+
+**Key files:** `LapForge/models.py`, `LapForge/session_store.py` (`plans` checklist schema + migrations), `LapForge/app.py`, `frontend/src/types/models.ts` (`ChecklistStep`, `Plan`), `frontend/src/components/plan/PlanChecklist.tsx`, new setup page(s), `DEFAULT_CHECKLIST_STEPS` in `LapForge/models.py` if defaults need new keys.
+
+**Deliverable:** Schema + API sketch + one UI wire for checklist linking; confirm field parity with ShopFloor for any import story.
+
+---
+
 ## Future phases
 
-### 6. Rust processing modules (napi-rs)
+### 8. Rust processing modules (napi-rs)
 
 Replace hot paths in the Python pipeline with Rust; same `process_session`-style interface; compare against fixtures. Later callable from Node after backend migration.
 
@@ -95,7 +141,7 @@ Replace hot paths in the Python pipeline with Rust; same `process_session`-style
 
 ---
 
-### 8. Node.js backend migration + drop Python
+### 9. Node.js backend migration + drop Python
 
 Express/Fastify, `better-sqlite3`, `googleapis`, `keytar` / `safeStorage`, Rust napi-rs in-process; remove PyInstaller; smaller installer.
 

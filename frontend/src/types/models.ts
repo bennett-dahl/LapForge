@@ -45,6 +45,7 @@ export interface Session {
   session_number: string;
   ambient_temp_c: number | null;
   track_temp_c: number | null;
+  weather_condition: string | null;
   tire_set_id: string | null;
   roll_out_pressure_fl: number | null;
   roll_out_pressure_fr: number | null;
@@ -98,6 +99,7 @@ export interface ChecklistStep {
   required: boolean;
   status: 'not_started' | 'linked' | 'reviewed';
   session_ids: string[];
+  setup_ids: string[];
   notes: string;
 }
 
@@ -115,6 +117,7 @@ export interface Plan {
   pressure_band_psi: number;
   current_ambient_temp_c: number | null;
   current_track_temp_c: number | null;
+  current_weather_condition?: string | null;
   created_at: string;
   /** Plan-level free-form notes (distinct from per-checklist-step notes). */
   notes?: string;
@@ -143,6 +146,7 @@ export interface BoardSession {
   roll_out_psi: CornerPressures;
   ambient_temp_c: number | null;
   track_temp_c: number | null;
+  weather_condition: string | null;
   tire_summary: Record<string, unknown> | null;
   bleed_events: BleedEvent[];
   planning_tag: string | null;
@@ -221,4 +225,59 @@ export interface Preferences {
   default_temp_unit: string;
   default_distance_unit: string;
   [key: string]: unknown;
+}
+
+export interface SetupCorner {
+  camber?: number | null;
+  toe?: number | null;
+  ride_height?: number | null;
+  weight_lbs?: number | null;
+  sway_bar?: number | null;
+}
+
+export interface SetupSnapshot {
+  fl?: SetupCorner;
+  fr?: SetupCorner;
+  rl?: SetupCorner;
+  rr?: SetupCorner;
+  front_axle_percent?: number | null;
+  rear_axle_percent?: number | null;
+  left_side_percent?: number | null;
+  right_side_percent?: number | null;
+  cross_fl_rr_percent?: number | null;
+  cross_fr_rl_percent?: number | null;
+  total_weight_lbs?: number | null;
+  track_width_front?: number | null;
+  track_width_rear?: number | null;
+  wing_angle_front_deg?: number | null;
+  wing_angle_rear_deg?: number | null;
+}
+
+export interface SetupData {
+  before?: SetupSnapshot;
+  after?: SetupSnapshot;
+  intermediate_steps?: Array<{ label?: string; snapshot: SetupSnapshot }>;
+  notes?: string;
+}
+
+export interface Setup {
+  id: string;
+  car_driver_id: string;
+  weekend_id: string | null;
+  session_id: string | null;
+  parent_id: string | null;
+  name: string;
+  data: SetupData;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SetupListItem {
+  id: string;
+  car_driver_id: string;
+  weekend_id: string | null;
+  session_id: string | null;
+  parent_id: string | null;
+  name: string;
+  created_at: string;
 }

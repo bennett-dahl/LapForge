@@ -741,6 +741,7 @@ function SessionInfoPanel({
     session_number: String(s.session_number ?? ''),
     ambient_temp_c: String(s.ambient_temp_c ?? ''),
     track_temp_c: String(s.track_temp_c ?? ''),
+    weather_condition: String(s.weather_condition ?? ''),
     tire_set_id: String(s.tire_set_id ?? ''),
     track_layout_id: String(s.track_layout_id ?? ''),
     target_pressure_psi: String(s.target_pressure_psi ?? ''),
@@ -790,6 +791,7 @@ function SessionInfoPanel({
       session_number: form.session_number || null,
       ambient_temp_c: parseFloat(form.ambient_temp_c) || null,
       track_temp_c: parseFloat(form.track_temp_c) || null,
+      weather_condition: form.weather_condition || null,
       tire_set_id: form.tire_set_id || null,
       track_layout_id: form.track_layout_id || null,
       target_pressure_psi: parseFloat(form.target_pressure_psi) || null,
@@ -812,6 +814,7 @@ function SessionInfoPanel({
               session_number: String(s.session_number ?? ''),
               ambient_temp_c: String(s.ambient_temp_c ?? ''),
               track_temp_c: String(s.track_temp_c ?? ''),
+              weather_condition: String(s.weather_condition ?? ''),
               tire_set_id: String(s.tire_set_id ?? ''),
               track_layout_id: String(s.track_layout_id ?? ''),
               target_pressure_psi: String(s.target_pressure_psi ?? ''),
@@ -945,6 +948,24 @@ function SessionInfoPanel({
               </dd>
             </div>
             <div>
+              <dt>Weather</dt>
+              <dd>
+                <select
+                  className="form-select form-select-sm"
+                  value={form.weather_condition}
+                  onChange={(e) => setForm({ ...form, weather_condition: e.target.value })}
+                >
+                  <option value="">—</option>
+                  <option value="Clear">Clear</option>
+                  <option value="Mixed">Mixed</option>
+                  <option value="Overcast">Overcast</option>
+                  <option value="Light Rain">Light Rain</option>
+                  <option value="Med Rain">Med Rain</option>
+                  <option value="Heavy Rain">Heavy Rain</option>
+                </select>
+              </dd>
+            </div>
+            <div>
               <dt>Target PSI</dt>
               <dd>
                 <input
@@ -1017,6 +1038,10 @@ function SessionInfoPanel({
             <div>
               <dt>Track Temp</dt>
               <dd>{fmtStoredTemp(s.track_temp_c)}</dd>
+            </div>
+            <div>
+              <dt>Weather</dt>
+              <dd>{String(s.weather_condition || '—')}</dd>
             </div>
             <div>
               <dt>Target PSI</dt>

@@ -235,10 +235,7 @@ export default function PlanPlanHeader({ plan, sessions, onChange, pressureUnit,
             </div>
           </div>
 
-          {/* Temp delta section (from race plan's original spot) */}
-          {mode === 'race' && (
-            <TempDeltaSection plan={plan} sessions={sessions} onChange={onChange} tempUnit={tempUnit} />
-          )}
+          <TempDeltaSection plan={plan} sessions={sessions} onChange={onChange} tempUnit={tempUnit} />
         </div>
       )}
     </div>
@@ -275,9 +272,11 @@ function TempDeltaSection({
     track: calcDelta(plan.current_track_temp_c, stabilizationSession?.track_temp_c),
   };
 
+  const WEATHER_OPTIONS = ['Clear', 'Mixed', 'Overcast', 'Light Rain', 'Med Rain', 'Heavy Rain'];
+
   return (
     <div style={{ fontSize: 12, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-      <div style={{ display: 'flex', gap: 16, marginBottom: 6 }}>
+      <div style={{ display: 'flex', gap: 16, marginBottom: 6, flexWrap: 'wrap' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <span className="text-muted">Ambient {tempLabel(tempUnit)}</span>
           <input
@@ -305,6 +304,22 @@ function TempDeltaSection({
               current_track_temp_c: e.target.value ? parseFloat(e.target.value) : null,
             } as Partial<Plan>)}
           />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span className="text-muted">Weather</span>
+          <select
+            className="input"
+            style={{ width: 120 }}
+            value={plan.current_weather_condition ?? ''}
+            onChange={e => onChange({
+              current_weather_condition: e.target.value || null,
+            } as Partial<Plan>)}
+          >
+            <option value="">—</option>
+            {WEATHER_OPTIONS.map(w => (
+              <option key={w} value={w}>{w}</option>
+            ))}
+          </select>
         </label>
       </div>
       {tempDelta.ambient.ref != null && (

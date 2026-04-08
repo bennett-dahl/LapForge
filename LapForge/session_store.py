@@ -18,6 +18,7 @@ from .models import (
     SavedComparison,
     Session,
     SessionType,
+    Setup,
     TireSet,
     TrackLayout,
     TrackSection,
@@ -106,6 +107,7 @@ class SessionStore:
                     session_number TEXT,
                     ambient_temp_c REAL,
                     track_temp_c REAL,
+                    weather_condition TEXT,
                     tire_set_id TEXT,
                     roll_out_pressure_fl REAL,
                     roll_out_pressure_fr REAL,
@@ -139,6 +141,7 @@ class SessionStore:
                     pressure_band_psi REAL DEFAULT 0.5,
                     current_ambient_temp_c REAL,
                     current_track_temp_c REAL,
+                    current_weather_condition TEXT,
                     created_at TEXT DEFAULT '',
                     notes TEXT DEFAULT '',
                     FOREIGN KEY (car_driver_id) REFERENCES car_drivers(id),
@@ -174,6 +177,20 @@ class SessionStore:
                     layout_json TEXT NOT NULL,
                     created_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS setups (
+                    id TEXT PRIMARY KEY,
+                    car_driver_id TEXT NOT NULL,
+                    weekend_id TEXT,
+                    session_id TEXT,
+                    parent_id TEXT,
+                    name TEXT NOT NULL DEFAULT '',
+                    data_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY (car_driver_id) REFERENCES car_drivers(id),
+                    FOREIGN KEY (session_id) REFERENCES sessions(id),
+                    FOREIGN KEY (parent_id) REFERENCES setups(id)
+                );
             """)
             self._migrate()
 
@@ -201,6 +218,8 @@ class SessionStore:
                 c.execute("ALTER TABLE sessions ADD COLUMN bleed_events_json TEXT")
             if "created_at" not in cols:
                 c.execute("ALTER TABLE sessions ADD COLUMN created_at TEXT DEFAULT ''")
+            if "weather_condition" not in cols:
+                c.execute("ALTER TABLE sessions ADD COLUMN weather_condition TEXT")
 
             # Migrate old weekends schema (had car_driver_id + session_ids_json) to event-level
             wk_cols = {
@@ -277,6 +296,8 @@ class SessionStore:
             }
             if plan_cols and "notes" not in plan_cols:
                 c.execute("ALTER TABLE plans ADD COLUMN notes TEXT DEFAULT ''")
+            if plan_cols and "current_weather_condition" not in plan_cols:
+                c.execute("ALTER TABLE plans ADD COLUMN current_weather_condition TEXT")
 
             ts_cols = {
                 row[1]
@@ -437,10 +458,11 @@ class SessionStore:
         with self._conn() as c:
             c.execute(
                 """INSERT INTO sessions (id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
-                   ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
+                   ambient_temp_c, track_temp_c, weather_condition, tire_set_id,
+                   roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
                    target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
                    file_path, parsed_data_json, session_summary_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session.id,
                     session.car_driver_id,
@@ -452,6 +474,7 @@ class SessionStore:
                     session.session_number,
                     session.ambient_temp_c,
                     session.track_temp_c,
+                    session.weather_condition,
                     session.tire_set_id,
                     session.roll_out_pressure_fl,
                     session.roll_out_pressure_fr,
@@ -477,7 +500,8 @@ class SessionStore:
         with self._conn() as c:
             c.execute(
                 """UPDATE sessions SET car_driver_id = ?, session_type = ?, track = ?, driver = ?, car = ?, outing_number = ?, session_number = ?,
-                   ambient_temp_c = ?, track_temp_c = ?, tire_set_id = ?, roll_out_pressure_fl = ?, roll_out_pressure_fr = ?, roll_out_pressure_rl = ?, roll_out_pressure_rr = ?,
+                   ambient_temp_c = ?, track_temp_c = ?, weather_condition = ?,
+                   tire_set_id = ?, roll_out_pressure_fl = ?, roll_out_pressure_fr = ?, roll_out_pressure_rl = ?, roll_out_pressure_rr = ?,
                    target_pressure_psi = ?, track_layout_id = ?, lap_count_notes = ?, planning_tag = ?, bleed_events_json = ?,
                    file_path = ?, parsed_data_json = ?, session_summary_json = ? WHERE id = ?""",
                 (
@@ -490,6 +514,7 @@ class SessionStore:
                     session.session_number,
                     session.ambient_temp_c,
                     session.track_temp_c,
+                    session.weather_condition,
                     session.tire_set_id,
                     session.roll_out_pressure_fl,
                     session.roll_out_pressure_fr,
@@ -513,7 +538,7 @@ class SessionStore:
                 """SELECT id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                    ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
                    target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
-                   file_path, parsed_data_json, created_at FROM sessions WHERE id = ?""",
+                   file_path, parsed_data_json, created_at, weather_condition FROM sessions WHERE id = ?""",
                 (id,),
             ).fetchone()
         if not row:
@@ -554,6 +579,7 @@ class SessionStore:
             file_path=row[20],
             parsed_data=parsed,
             created_at=row[22] or "",
+            weather_condition=row[23] if len(row) > 23 else None,
         )
 
     def list_sessions(self, car_driver_id: str | None = None) -> list[Session]:
@@ -564,7 +590,7 @@ class SessionStore:
                     """SELECT id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                        ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
                        target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
-                       file_path, session_summary_json, created_at FROM sessions WHERE car_driver_id = ? ORDER BY track, session_type""",
+                       file_path, session_summary_json, created_at, weather_condition FROM sessions WHERE car_driver_id = ? ORDER BY track, session_type""",
                     (car_driver_id,),
                 ).fetchall()
             else:
@@ -572,7 +598,7 @@ class SessionStore:
                     """SELECT id, car_driver_id, session_type, track, driver, car, outing_number, session_number,
                        ambient_temp_c, track_temp_c, tire_set_id, roll_out_pressure_fl, roll_out_pressure_fr, roll_out_pressure_rl, roll_out_pressure_rr,
                        target_pressure_psi, track_layout_id, lap_count_notes, planning_tag, bleed_events_json,
-                       file_path, session_summary_json, created_at FROM sessions ORDER BY car_driver_id, track, session_type"""
+                       file_path, session_summary_json, created_at, weather_condition FROM sessions ORDER BY car_driver_id, track, session_type"""
                 ).fetchall()
         out = []
         for row in rows:
@@ -613,6 +639,7 @@ class SessionStore:
                     file_path=row[20],
                     parsed_data={"summary": summary} if summary else None,
                     created_at=row[22] or "",
+                    weather_condition=row[23] if len(row) > 23 else None,
                 )
             )
         return out
@@ -657,6 +684,7 @@ class SessionStore:
         """Delete session and clean up plan references. Returns affected plan ids."""
         affected: list[dict[str, str]] = []
         with self._conn() as c:
+            c.execute("UPDATE setups SET session_id = NULL WHERE session_id = ?", (id,))
             plan_rows = c.execute(
                 "SELECT id, session_ids_json, checklist_json FROM plans"
             ).fetchall()
@@ -735,6 +763,7 @@ class SessionStore:
         """Delete weekend and cascade-delete its plans. Returns affected plans."""
         affected: list[dict[str, str]] = []
         with self._conn() as c:
+            c.execute("UPDATE setups SET weekend_id = NULL WHERE weekend_id = ?", (id,))
             rows = c.execute("SELECT id FROM plans WHERE weekend_id = ?", (id,)).fetchall()
             for r in rows:
                 affected.append({"id": r[0]})
@@ -755,13 +784,15 @@ class SessionStore:
                 """INSERT INTO plans (id, car_driver_id, weekend_id, session_ids_json,
                    checklist_json, planning_mode, qual_plan_json, race_plan_json,
                    qual_lap_range_json, race_stint_lap_range_json, pressure_band_psi,
-                   current_ambient_temp_c, current_track_temp_c, created_at, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   current_ambient_temp_c, current_track_temp_c, current_weather_condition,
+                   created_at, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (p.id, p.car_driver_id, p.weekend_id, json.dumps(p.session_ids),
                  json.dumps(p.checklist), p.planning_mode, json.dumps(p.qual_plan),
                  json.dumps(p.race_plan), json.dumps(p.qual_lap_range),
                  json.dumps(p.race_stint_lap_range), p.pressure_band_psi,
-                 p.current_ambient_temp_c, p.current_track_temp_c, p.created_at, p.notes),
+                 p.current_ambient_temp_c, p.current_track_temp_c,
+                 p.current_weather_condition, p.created_at, p.notes),
             )
         return p
 
@@ -771,7 +802,8 @@ class SessionStore:
                 """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
                    planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
                    race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
-                   current_track_temp_c, created_at, notes FROM plans WHERE id = ?""",
+                   current_track_temp_c, created_at, notes, current_weather_condition
+                   FROM plans WHERE id = ?""",
                 (plan_id,),
             ).fetchone()
         if not row:
@@ -784,8 +816,8 @@ class SessionStore:
                 """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
                    planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
                    race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
-                   current_track_temp_c, created_at, notes FROM plans
-                   WHERE car_driver_id = ? AND weekend_id = ?""",
+                   current_track_temp_c, created_at, notes, current_weather_condition
+                   FROM plans WHERE car_driver_id = ? AND weekend_id = ?""",
                 (car_driver_id, weekend_id),
             ).fetchone()
         if not row:
@@ -799,7 +831,8 @@ class SessionStore:
                     """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
                        planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
                        race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
-                       current_track_temp_c, created_at, notes FROM plans WHERE weekend_id = ? ORDER BY created_at""",
+                       current_track_temp_c, created_at, notes, current_weather_condition
+                       FROM plans WHERE weekend_id = ? ORDER BY created_at""",
                     (weekend_id,),
                 ).fetchall()
             else:
@@ -807,7 +840,8 @@ class SessionStore:
                     """SELECT id, car_driver_id, weekend_id, session_ids_json, checklist_json,
                        planning_mode, qual_plan_json, race_plan_json, qual_lap_range_json,
                        race_stint_lap_range_json, pressure_band_psi, current_ambient_temp_c,
-                       current_track_temp_c, created_at, notes FROM plans ORDER BY created_at"""
+                       current_track_temp_c, created_at, notes, current_weather_condition
+                       FROM plans ORDER BY created_at"""
                 ).fetchall()
         return [self._plan_from_row(r) for r in rows]
 
@@ -824,7 +858,8 @@ class SessionStore:
             "race_stint_lap_range": "race_stint_lap_range_json",
         }
         scalar_fields = {"planning_mode", "pressure_band_psi",
-                         "current_ambient_temp_c", "current_track_temp_c", "notes"}
+                         "current_ambient_temp_c", "current_track_temp_c",
+                         "current_weather_condition", "notes"}
         sets: list[str] = []
         vals: list[Any] = []
         for k, v in kwargs.items():
@@ -846,12 +881,15 @@ class SessionStore:
 
     @staticmethod
     def _plan_from_row(row: tuple) -> Plan:
+        checklist = json.loads(row[4] or "[]")
+        for step in checklist:
+            step.setdefault("setup_ids", [])
         return Plan(
             id=row[0],
             car_driver_id=row[1],
             weekend_id=row[2],
             session_ids=json.loads(row[3] or "[]"),
-            checklist=json.loads(row[4] or "[]"),
+            checklist=checklist,
             planning_mode=row[5] or "race",
             qual_plan=json.loads(row[6] or "{}"),
             race_plan=json.loads(row[7] or "{}"),
@@ -862,6 +900,161 @@ class SessionStore:
             current_track_temp_c=row[12],
             created_at=row[13] or "",
             notes=(row[14] or "") if len(row) > 14 else "",
+            current_weather_condition=row[15] if len(row) > 15 else None,
+        )
+
+    # ---------- Setup ----------
+    def add_setup(
+        self,
+        car_driver_id: str,
+        name: str = "",
+        data: dict[str, Any] | None = None,
+        weekend_id: str | None = None,
+        session_id: str | None = None,
+        parent_id: str | None = None,
+        id: str | None = None,
+    ) -> Setup:
+        id = id or str(uuid.uuid4())
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        s = Setup(
+            id=id,
+            car_driver_id=car_driver_id,
+            name=name,
+            weekend_id=weekend_id,
+            session_id=session_id,
+            parent_id=parent_id,
+            data=data or {},
+            created_at=now,
+            updated_at=now,
+        )
+        with self._conn() as c:
+            c.execute(
+                """INSERT INTO setups
+                   (id, car_driver_id, weekend_id, session_id, parent_id, name, data_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (s.id, s.car_driver_id, s.weekend_id, s.session_id, s.parent_id,
+                 s.name, json.dumps(s.data), s.created_at, s.updated_at),
+            )
+        return s
+
+    def get_setup(self, id: str) -> Setup | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT id, car_driver_id, weekend_id, session_id, parent_id, name, data_json, created_at, updated_at FROM setups WHERE id = ?",
+                (id,),
+            ).fetchone()
+        if not row:
+            return None
+        data: dict[str, Any] = {}
+        if row[6]:
+            try:
+                data = json.loads(row[6])
+            except (ValueError, TypeError):
+                data = {}
+        return Setup(
+            id=row[0], car_driver_id=row[1], weekend_id=row[2],
+            session_id=row[3], parent_id=row[4], name=row[5] or "",
+            data=data, created_at=row[7] or "", updated_at=row[8] or "",
+        )
+
+    def list_setups(
+        self,
+        car_driver_id: str | None = None,
+        weekend_id: str | None = None,
+    ) -> list[Setup]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if car_driver_id is not None:
+            clauses.append("car_driver_id = ?")
+            params.append(car_driver_id)
+        if weekend_id is not None:
+            clauses.append("weekend_id = ?")
+            params.append(weekend_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as c:
+            rows = c.execute(
+                f"SELECT id, car_driver_id, weekend_id, session_id, parent_id, name, data_json, created_at, updated_at FROM setups{where} ORDER BY created_at DESC",
+                params,
+            ).fetchall()
+        out: list[Setup] = []
+        for row in rows:
+            data: dict[str, Any] = {}
+            if row[6]:
+                try:
+                    data = json.loads(row[6])
+                except (ValueError, TypeError):
+                    data = {}
+            out.append(Setup(
+                id=row[0], car_driver_id=row[1], weekend_id=row[2],
+                session_id=row[3], parent_id=row[4], name=row[5] or "",
+                data=data, created_at=row[7] or "", updated_at=row[8] or "",
+            ))
+        return out
+
+    def update_setup(self, id: str, **kwargs: Any) -> Setup | None:
+        existing = self.get_setup(id)
+        if not existing:
+            return None
+        allowed_scalar = {"name", "weekend_id", "session_id"}
+        sets: list[str] = []
+        vals: list[Any] = []
+        for k, v in kwargs.items():
+            if k in allowed_scalar:
+                sets.append(f"{k} = ?")
+                vals.append(v)
+            elif k == "data":
+                sets.append("data_json = ?")
+                vals.append(json.dumps(v) if not isinstance(v, str) else v)
+        if sets:
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            sets.append("updated_at = ?")
+            vals.append(now)
+            vals.append(id)
+            with self._conn() as c:
+                c.execute(f"UPDATE setups SET {', '.join(sets)} WHERE id = ?", vals)
+        return self.get_setup(id)
+
+    def delete_setup(self, id: str) -> None:
+        with self._conn() as c:
+            plan_rows = c.execute(
+                "SELECT id, checklist_json FROM plans"
+            ).fetchall()
+            for pid, cl_json in plan_rows:
+                checklist = json.loads(cl_json or "[]")
+                changed = False
+                for step in checklist:
+                    step_sids = step.get("setup_ids", [])
+                    if id in step_sids:
+                        step_sids.remove(id)
+                        changed = True
+                if changed:
+                    c.execute(
+                        "UPDATE plans SET checklist_json = ? WHERE id = ?",
+                        (json.dumps(checklist), pid),
+                    )
+            c.execute("DELETE FROM setups WHERE id = ?", (id,))
+
+    def fork_setup(
+        self,
+        source_id: str,
+        name: str | None = None,
+        weekend_id: str | None = None,
+        session_id: str | None = None,
+    ) -> Setup | None:
+        source = self.get_setup(source_id)
+        if not source:
+            return None
+        fork_snapshot = source.data.get("after") if source.data.get("after") else source.data.get("before")
+        if not fork_snapshot:
+            fork_snapshot = {}
+        new_data: dict[str, Any] = {"before": fork_snapshot}
+        return self.add_setup(
+            car_driver_id=source.car_driver_id,
+            name=name if name is not None else source.name,
+            data=new_data,
+            weekend_id=weekend_id if weekend_id is not None else source.weekend_id,
+            session_id=session_id,
+            parent_id=source_id,
         )
 
     # ---------- Saved comparison (Compare view bookmarks) ----------
