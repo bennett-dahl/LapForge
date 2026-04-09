@@ -15,6 +15,18 @@
 
 ## Open backlog
 
+### High priority (bugs)
+
+#### Plan checklist — removing a session does not update summary or chart
+
+**Problem:** When a session is unlinked from a plan checklist section, the **summary** (aggregated session list / metrics at the plan level) still includes the removed session, and the **chart** for that section remains visible instead of disappearing when no sessions are linked.
+
+**Expected:** Unlinking the last session from a checklist step should remove its contribution from the plan summary and hide (or empty) the associated chart. Unlinking one of several sessions should update both views to reflect only the remaining linked sessions.
+
+**Key files:** `frontend/src/components/plan/PlanChecklist.tsx`, `frontend/src/pages/PlanPage.tsx`, `LapForge/app.py` (plan/checklist API routes), `LapForge/session_store.py` (plan persistence).
+
+---
+
 ### Medium priority
 
 #### 1. Live Session Dashboard
@@ -133,7 +145,7 @@ LapForge does not need Mongo/work orders; map **vehicle → `car_driver_id`**, d
 
 ## Future phases
 
-### 8. Rust processing modules (napi-rs)
+### 9. Rust processing modules (napi-rs)
 
 Replace hot paths in the Python pipeline with Rust; same `process_session`-style interface; compare against fixtures. Later callable from Node after backend migration.
 
@@ -141,13 +153,32 @@ Replace hot paths in the Python pipeline with Rust; same `process_session`-style
 
 ---
 
-### 9. Node.js backend migration + drop Python
+### 10. Node.js backend migration + drop Python
 
 Express/Fastify, `better-sqlite3`, `googleapis`, `keytar` / `safeStorage`, Rust napi-rs in-process; remove PyInstaller; smaller installer.
 
 ---
 
 ## Recently completed
+
+### Section metrics — Improvement list cap removed + PDF print fix
+
+**What shipped:**
+
+1. **Improvement opportunities — full list:** Removed the hard cap of 12 tiles so all ranked sectors display. Track sections are bounded in practice (5–20 per layout), so no "show more" button is needed.
+2. **PDF print regression fix:** Extended `@media print` rules for `.section-best-top3` (the Fastest sections `ol`): forced flex column layout with full width, overrode `justify-content` on `li` to prevent zero-width collapse, added higher-specificity color and sizing rules for nested `.section-best-tile-time` / `.section-best-tile-lap`, and increased `min-width` on `.section-best-tile` for print. Times and lap labels now render correctly in Chrome Save as PDF.
+
+**Key files:** `frontend/src/components/tools/SectionMetrics.tsx`, `LapForge/static/style.css`.
+
+---
+
+### Section metrics — Fastest sections top three laps
+
+**What shipped:** In **Fastest sections**, each sector tile lists the **top three** fastest laps for that section (time + lap number), not only the single best. Excluded laps stay excluded; fewer than three laps shows however many exist.
+
+**Key files:** `frontend/src/components/tools/SectionMetrics.tsx`, `LapForge/static/style.css`.
+
+---
 
 ### Home page — remaining polish (former backlog #2)
 

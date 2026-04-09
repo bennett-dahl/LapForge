@@ -1920,6 +1920,33 @@ thead .sm-col-fixed { z-index: 3; background: var(--bg, #1a1a2e); }
   font-size: 0.62rem;
   color: var(--fg-muted, #888);
 }
+.improvement-subhint {
+  font-size: 0.72rem;
+  margin: -0.25rem 0 0.5rem;
+}
+.section-best-top3 {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+}
+.section-best-top3 li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+}
+.section-best-top3 .section-best-tile-time {
+  font-size: 0.72rem;
+}
+.section-best-top3 li:first-child .section-best-tile-time {
+  font-size: 0.78rem;
+}
 .section-grid-scroll {
   overflow-x: auto;
   border-radius: 8px;
@@ -2567,17 +2594,31 @@ thead .sm-col-fixed { z-index: 3; background: var(--bg, #1a1a2e); }
     print-color-adjust: exact;
   }
 
-  /* Hide chrome: sidebar, header, tabs, toolbar button */
+  /* Hide chrome: sidebar, header, tabs, toolbar button, footer */
   .sidebar,
   .session-detail-header,
   .session-tabs-bar,
   .back-link,
   .no-print,
   .reprocess-progress-card,
+  .app-footer,
   .alert { display: none !important; }
 
   /* Show print-only metadata header */
   .print-only { display: block !important; }
+
+  /* Break out of viewport-locked layout so content flows across pages */
+  .main-content {
+    height: auto !important;
+    overflow: visible !important;
+    display: block !important;
+    margin-left: 0 !important;
+    width: 100% !important;
+  }
+  .main-scroll-area {
+    overflow: visible !important;
+    height: auto !important;
+  }
 
   /* Remove page padding constraints */
   .page-content,
@@ -2671,6 +2712,36 @@ thead .sm-col-fixed { z-index: 3; background: var(--bg, #1a1a2e); }
   .improvement-tile-best { color: #444 !important; }
   .section-best-tile-time { color: #111 !important; }
   .section-best-tile-lap { color: #666 !important; }
+  .improvement-subhint { color: #666 !important; font-size: 7pt !important; }
+  .section-best-top3 {
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100% !important;
+    list-style: none !important;
+    padding: 0 !important;
+    gap: 2pt !important;
+    margin-top: 2pt !important;
+  }
+  .section-best-top3 li {
+    display: flex !important;
+    justify-content: flex-start !important;
+    gap: 6pt !important;
+    flex-wrap: nowrap !important;
+    font-size: 7pt !important;
+  }
+  .section-best-top3 .section-best-tile-time {
+    color: #111 !important;
+    font-size: 7pt !important;
+    font-weight: 700 !important;
+  }
+  .section-best-top3 .section-best-tile-lap {
+    color: #555 !important;
+    font-size: 6pt !important;
+  }
+  .improvement-tile.section-best-tile {
+    min-width: 7rem !important;
+    align-items: flex-start !important;
+  }
 
   /* Section grid table — scale down when too wide for the page */
   .section-grid-scroll {

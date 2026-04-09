@@ -318,7 +318,6 @@ export default function SectionMetrics({
     const lapTimesSeg = dashData.lap_times ?? [];
 
     const bestDur: (number | null)[] = Array(nSec).fill(null);
-    const bestDurLap: (number | null)[] = Array(nSec).fill(null);
     for (let si = 0; si < nSec; si++) {
       for (let li = 0; li < nLaps; li++) {
         const rowSeg = lapTimesSeg[li]?.segment_index ?? li;
@@ -327,7 +326,6 @@ export default function SectionMetrics({
         if (d == null) continue;
         if (bestDur[si] === null || d < bestDur[si]!) {
           bestDur[si] = d;
-          bestDurLap[si] = lapTimesSeg[li]?.lap ?? li + 1;
         }
       }
     }
@@ -370,8 +368,20 @@ export default function SectionMetrics({
     }
     improvement.sort((a, b) => b.avgDelta - a.avgDelta);
 
-    const sectionBestTimes = sectionDefs.map((_, si) => bestDur[si]);
-    const sectionBestLaps = sectionDefs.map((_, si) => bestDurLap[si]);
+    /** Per section: up to three fastest laps by section time (ascending). */
+    const sectionTopThree: { lap: number; duration: number }[][] = sectionDefs.map(() => []);
+    for (let si = 0; si < nSec; si++) {
+      const pairs: { lap: number; duration: number }[] = [];
+      for (let li = 0; li < nLaps; li++) {
+        const rowSeg = lapTimesSeg[li]?.segment_index ?? li;
+        if (excludedSet.has(rowSeg)) continue;
+        const d = grid[li][si]?.duration;
+        if (d == null) continue;
+        pairs.push({ lap: lapTimesSeg[li]?.lap ?? li + 1, duration: d });
+      }
+      pairs.sort((a, b) => a.duration - b.duration);
+      sectionTopThree[si] = pairs.slice(0, 3);
+    }
 
     let fastestLapTime: number | null = null;
     for (let li = 0; li < lapTimesSeg.length; li++) {
@@ -393,8 +403,7 @@ export default function SectionMetrics({
         ? Math.round(virtualBestTotal * 1000) / 1000
         : null,
       improvement,
-      sectionBestTimes,
-      sectionBestLaps,
+      sectionTopThree,
       splits,
       fastestLapTime,
       brakeStorageUnit,
@@ -432,8 +441,7 @@ export default function SectionMetrics({
     bestDur,
     virtualBestTotal,
     improvement,
-    sectionBestTimes,
-    sectionBestLaps,
+    sectionTopThree,
     fastestLapTime,
     brakeStorageUnit,
   } = computed;
@@ -550,7 +558,7 @@ export default function SectionMetrics({
         <div className="improvement-block">
           <h4 className="improvement-heading">Improvement opportunities</h4>
           <div className="improvement-tiles">
-            {improvement.slice(0, 12).map((row, rank) => (
+            {improvement.map((row, rank) => (
               <div key={row.index} className={`improvement-tile${rank < 3 ? ' improvement-tile-top' : ''}`}>
                 <span className="improvement-tile-rank">{rank + 1}</span>
                 <span className="improvement-tile-name">{row.name}</span>
@@ -564,6 +572,7 @@ export default function SectionMetrics({
 
       <div className="improvement-block">
         <h4 className="improvement-heading">Fastest sections</h4>
+        <p className="muted improvement-subhint">Top three section times per sector (fastest first).</p>
         <div className="improvement-tiles">
           {sectionDefs.map((s, si) => (
             <div
@@ -572,12 +581,18 @@ export default function SectionMetrics({
               title={`${metersToDistanceDisplay(s.start_distance, distanceUnit).toFixed(3)}–${metersToDistanceDisplay(s.end_distance, distanceUnit).toFixed(3)} ${distanceUnit}`}
             >
               <span className="improvement-tile-name">{s.name}</span>
-              <span className="section-best-tile-time">
-                {sectionBestTimes[si] != null ? formatSectionTime(sectionBestTimes[si]!) : '—'}
-              </span>
-              <span className="section-best-tile-lap">
-                {sectionBestLaps[si] != null ? `Lap ${sectionBestLaps[si]}` : ''}
-              </span>
+              {sectionTopThree[si].length === 0 ? (
+                <span className="section-best-tile-time">—</span>
+              ) : (
+                <ol className="section-best-top3">
+                  {sectionTopThree[si].map((row, ri) => (
+                    <li key={`${si}-${row.lap}-${ri}`}>
+                      <span className="section-best-tile-time">{formatSectionTime(row.duration)}</span>
+                      <span className="section-best-tile-lap">Lap {row.lap}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
             </div>
           ))}
         </div>

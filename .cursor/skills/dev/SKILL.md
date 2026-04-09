@@ -5,6 +5,8 @@ description: Develop and verify LapForge locally: Python Flask backend in LapFor
 
 # LapForge development (`/dev`)
 
+**Slash command:** Typing `/dev` in chat uses `.cursor/commands/dev.md`. Agent Skills (this file) are separate from slash commands in Cursor; both stay in sync for the same workflow.
+
 ## Layout
 
 | Area | Path | Notes |
