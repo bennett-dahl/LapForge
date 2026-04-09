@@ -174,6 +174,9 @@ export interface TrackLayout {
   source_session_id: string | null;
   source_lap_index: number | null;
   created_at: string;
+  source_driver: string | null;
+  source_car: string | null;
+  source_session_name: string | null;
 }
 
 export interface SavedComparison {

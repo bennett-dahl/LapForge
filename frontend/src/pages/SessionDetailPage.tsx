@@ -683,6 +683,8 @@ export default function SessionDetailPage() {
                   appliedReferenceIndex={dashData.map_lap_segment_index ?? dashData.reference_lap_index ?? null}
                   onApplyReferenceLap={handleApplyReferenceLap}
                   referenceLapApplyPending={refLapMut.isPending}
+                  trackLayouts={data.track_layouts}
+                  trackLayoutId={(session.track_layout_id as string | null | undefined) ?? null}
                 />
               )
             )}

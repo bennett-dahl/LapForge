@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
-import type { TrackSection } from '../../types/models';
+import { apiGet, apiPatch, apiPost } from '../../api/client';
+import type { TrackLayout, TrackSection } from '../../types/models';
 import TrackMap from '../maps/TrackMap';
 import TelemetryChart from '../charts/TelemetryChart';
 import type { TelemetryChannel } from '../charts/TelemetryChart';
@@ -124,6 +124,8 @@ export interface SectionEditorProps {
   appliedReferenceIndex?: number | null;
   onApplyReferenceLap?: (segmentIndex: number) => Promise<void>;
   referenceLapApplyPending?: boolean;
+  trackLayouts: TrackLayout[];
+  trackLayoutId: string | null;
 }
 
 export default function SectionEditor({
@@ -134,12 +136,17 @@ export default function SectionEditor({
   appliedReferenceIndex = null,
   onApplyReferenceLap,
   referenceLapApplyPending = false,
+  trackLayouts,
+  trackLayoutId,
 }: SectionEditorProps) {
   const qc = useQueryClient();
   const [selectedRefLap, setSelectedRefLap] = useState(appliedReferenceIndex ?? 0);
   useEffect(() => {
     if (appliedReferenceIndex != null) setSelectedRefLap(appliedReferenceIndex);
   }, [appliedReferenceIndex]);
+  const [selectedLayoutId, setSelectedLayoutId] = useState<string>(trackLayoutId ?? '');
+  useEffect(() => { setSelectedLayoutId(trackLayoutId ?? ''); }, [trackLayoutId]);
+
   const [sections, setSections] = useState<TrackSection[]>(initialSections);
   const [activeIdx, setActiveIdx] = useState<number>(-1);
   const groupCounter = useRef(
@@ -251,6 +258,14 @@ export default function SectionEditor({
   const autoMut = useMutation({
     mutationFn: () => apiGet<TrackSection[]>(`/api/sections/${trackName}/auto-detect?session_id=${sessionId}`),
     onSuccess: (result) => { setSections(result); setActiveIdx(-1); },
+  });
+
+  const layoutMut = useMutation({
+    mutationFn: (id: string | null) =>
+      apiPatch<{ ok: boolean }>(`/api/sessions/${sessionId}/track-layout`, { track_layout_id: id || null }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['session-detail', sessionId] });
+    },
   });
 
   const sectionColors = useMemo(() => assignSectionColors(sections), [sections]);
@@ -383,6 +398,42 @@ export default function SectionEditor({
                     : 'Current: Auto'}
                 </span>
               </>
+            )}
+            {trackLayouts.length > 0 ? (
+              <>
+                <label className="sec-ref-lap-field">
+                  <span className="sec-ref-lap-label">Saved map</span>
+                  <select
+                    className="sec-ref-lap-select"
+                    value={selectedLayoutId}
+                    onChange={(e) => setSelectedLayoutId(e.target.value)}
+                  >
+                    <option value="">None (use session GPS)</option>
+                    {trackLayouts.map((tl) => (
+                      <option key={tl.id} value={tl.id}>
+                        {tl.name}{tl.track_name !== trackName ? ` (${tl.track_name})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={layoutMut.isPending || selectedLayoutId === (trackLayoutId ?? '')}
+                  onClick={() => layoutMut.mutate(selectedLayoutId || null)}
+                >
+                  {layoutMut.isPending ? 'Applying\u2026' : 'Apply saved map'}
+                </Button>
+                <span className="sec-ref-lap-applied">
+                  {trackLayoutId
+                    ? `Current: ${trackLayouts.find((l) => l.id === trackLayoutId)?.name ?? trackLayoutId}`
+                    : 'Current: Session GPS'}
+                </span>
+              </>
+            ) : (
+              <span className="muted" style={{ fontSize: '0.8em' }}>
+                No saved maps &mdash; <a href="/track-layouts">create one</a>
+              </span>
             )}
           </div>
           <div className="sec-table-scroll">

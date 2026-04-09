@@ -425,12 +425,12 @@ def create_app() -> Flask:
                 fast_idx_effective = i
 
         reference_lap = sd.get("reference_lap") if isinstance(sd.get("reference_lap"), dict) else {}
-        if not _reference_lap_has_geometry(reference_lap):
-            merged_ref = None
-            if session.track_layout_id:
-                merged_ref = st.get_track_layout_ref(session.track_layout_id)
-            if (not merged_ref or not _reference_lap_has_geometry(merged_ref)) and session.track:
-                merged_ref = st.get_track_layout(session.track)
+        if session.track_layout_id:
+            layout_ref = st.get_track_layout_ref(session.track_layout_id)
+            if layout_ref and _reference_lap_has_geometry(layout_ref):
+                reference_lap = layout_ref
+        elif not _reference_lap_has_geometry(reference_lap) and session.track:
+            merged_ref = st.get_track_layout(session.track)
             if merged_ref and _reference_lap_has_geometry(merged_ref):
                 reference_lap = merged_ref
         lsd = lap_split_distances if isinstance(lap_split_distances, list) else []
