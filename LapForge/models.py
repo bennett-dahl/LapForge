@@ -116,7 +116,7 @@ class Session:
         return {
             "id": self.id,
             "car_driver_id": self.car_driver_id,
-            "session_type": self.session_type.value,
+            "session_type": self.session_type,
             "track": self.track,
             "driver": self.driver,
             "car": self.car,
@@ -152,7 +152,9 @@ class Session:
         return cls(
             id=str(d["id"]),
             car_driver_id=str(d["car_driver_id"]),
-            session_type=SessionType(d.get("session_type", "Practice 1")),
+            session_type=normalize_session_type(
+                str(d.get("session_type", "")) if d.get("session_type") is not None else None
+            ),
             track=str(d.get("track", "")),
             driver=str(d.get("driver", "")),
             car=str(d.get("car", "")),

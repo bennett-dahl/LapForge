@@ -1,57 +1,59 @@
 {
-    "name":  "lapforge",
-    "version":  "1.7.2",
-    "description":  "LapForge - Telemetry Analysis Tool",
-    "main":  "main.js",
-    "scripts":  {
-                    "start":  "electron .",
-                    "dev":  "electron . --dev",
-                    "dist":  "electron-builder",
-                    "dist:win":  "electron-builder --win"
-                },
-    "author":  "",
-    "license":  "PRIVATE",
-    "devDependencies":  {
-                            "electron":  "^33.0.0",
-                            "electron-builder":  "^25.0.0"
-                        },
-    "dependencies":  {
-                         "electron-updater":  "^6.8.3"
-                     },
-    "build":  {
-                  "appId":  "com.lapforge.app",
-                  "productName":  "LapForge",
-                  "directories":  {
-                                      "output":  "../dist/electron"
-                                  },
-                  "extraResources":  [
-                                         {
-                                             "from":  "../dist/backend",
-                                             "to":  "backend",
-                                             "filter":  [
-                                                            "**/*"
-                                                        ]
-                                         }
-                                     ],
-                  "publish":  [
-                                  {
-                                      "provider":  "github",
-                                      "owner":  "bennett-dahl",
-                                      "repo":  "LapForge",
-                                      "releaseType":  "release"
-                                  }
-                              ],
-                  "win":  {
-                              "target":  "nsis",
-                              "icon":  "icons/icon.ico"
-                          },
-                  "nsis":  {
-                               "oneClick":  false,
-                               "perMachine":  false,
-                               "allowToChangeInstallationDirectory":  true,
-                               "createDesktopShortcut":  true,
-                               "createStartMenuShortcut":  true,
-                               "shortcutName":  "LapForge"
-                           }
-              }
+    "name": "lapforge",
+    "version": "1.7.2",
+    "description": "LapForge - Telemetry Analysis Tool",
+    "main": "main.js",
+    "scripts": {
+        "postinstall": "patch-package",
+        "start": "electron .",
+        "dev": "electron . --dev",
+        "dist": "electron-builder",
+        "dist:win": "electron-builder --win"
+    },
+    "author": "",
+    "license": "PRIVATE",
+    "devDependencies": {
+        "electron": "^33.0.0",
+        "electron-builder": "^25.0.0",
+        "patch-package": "^8.0.1"
+    },
+    "dependencies": {
+        "electron-updater": "^6.8.3"
+    },
+    "build": {
+        "appId": "com.lapforge.app",
+        "productName": "LapForge",
+        "directories": {
+            "output": "../dist/electron"
+        },
+        "extraResources": [
+            {
+                "from": "../dist/backend",
+                "to": "backend",
+                "filter": [
+                    "**/*"
+                ]
+            }
+        ],
+        "publish": [
+            {
+                "provider": "github",
+                "owner": "bennett-dahl",
+                "repo": "LapForge",
+                "releaseType": "release"
+            }
+        ],
+        "win": {
+            "target": "nsis",
+            "icon": "icons/icon.ico"
+        },
+        "nsis": {
+            "oneClick": false,
+            "perMachine": false,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true,
+            "shortcutName": "LapForge"
+        }
+    }
 }

@@ -1,0 +1,16 @@
+diff --git a/node_modules/electron-updater/out/providers/GitHubProvider.js b/node_modules/electron-updater/out/providers/GitHubProvider.js
+index 6795ee8..b145008 100644
+--- a/node_modules/electron-updater/out/providers/GitHubProvider.js
++++ b/node_modules/electron-updater/out/providers/GitHubProvider.js
+@@ -71,6 +71,11 @@ class GitHubProvider extends BaseGitHubProvider {
+                         // Allow moving from alpha to beta but not down
+                         const channelMismatch = currentChannel === "beta" && hrefChannel === "alpha";
+                         if (shouldFetchVersion && !isCustomChannel && !channelMismatch) {
++                            // Skip stable releases when the app is on alpha/beta; otherwise the newest
++                            // feed entry can be stable and beta.yml is missing on that release.
++                            if (hrefChannel == null && currentChannel != null && ["alpha", "beta"].includes(String(currentChannel))) {
++                                continue;
++                            }
+                             tag = hrefTag;
+                             break;
+                         }
