@@ -1776,6 +1776,53 @@ def create_app() -> Flask:
         updated = store.update_plan(plan_id, **kwargs)
         return jsonify({"ok": True, "plan": updated.to_dict() if updated else p.to_dict()})
 
+    @app.route("/api/plans/<plan_id>/cleanup-sessions", methods=["POST"])
+    def api_plans_cleanup_sessions(plan_id: str):
+        """Repair plan session references: drop deleted sessions, optionally align plan.session_ids with checklist."""
+        plan = store.get_plan(plan_id)
+        if not plan:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        prune_deleted = bool(data.get("prune_deleted", True))
+        align_to_checklist = bool(data.get("align_to_checklist", False))
+
+        new_checklist: list[dict[str, Any]] = []
+        for step in plan.checklist:
+            sid_list = list(step.get("session_ids") or [])
+            if prune_deleted:
+                sid_list = [sid for sid in sid_list if store.get_session(sid)]
+            setup_ids = list(step.get("setup_ids") or [])
+            step_copy = dict(step)
+            step_copy["session_ids"] = sid_list
+            step_copy["setup_ids"] = setup_ids
+            old_status = str(step.get("status") or "not_started")
+            has_content = bool(sid_list or setup_ids)
+            if not has_content:
+                step_copy["status"] = "not_started"
+            elif old_status == "not_started":
+                step_copy["status"] = "linked"
+            new_checklist.append(step_copy)
+
+        if align_to_checklist:
+            seen: set[str] = set()
+            new_session_ids: list[str] = []
+            for step in new_checklist:
+                for sid in step.get("session_ids") or []:
+                    if sid not in seen:
+                        seen.add(sid)
+                        new_session_ids.append(sid)
+        else:
+            new_session_ids = list(plan.session_ids or [])
+            if prune_deleted:
+                new_session_ids = [sid for sid in new_session_ids if store.get_session(sid)]
+
+        updated = store.update_plan(
+            plan_id,
+            checklist=new_checklist,
+            session_ids=new_session_ids,
+        )
+        return jsonify({"ok": True, "plan": updated.to_dict() if updated else None})
+
     @app.route("/api/plans/<plan_id>", methods=["DELETE"])
     def api_plans_delete(plan_id: str):
         p = store.get_plan(plan_id)

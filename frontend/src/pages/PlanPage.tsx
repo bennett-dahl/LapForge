@@ -125,6 +125,7 @@ export default function PlanPage() {
   const [panelCollapsed, setPanelCollapsed] = useState(() =>
     localStorage.getItem('plan_panel_collapsed') === '1',
   );
+  const [cleanupBusy, setCleanupBusy] = useState(false);
 
   function togglePanel() {
     const next = !panelCollapsed;
@@ -173,7 +174,6 @@ export default function PlanPage() {
   }, [weekend]);
 
   const serverPlan = boardData?.plan ?? currentPlan;
-  const sessions = boardData?.sessions ?? [];
 
   const [localOverride, setLocalOverride] = useState<Partial<Plan>>({});
   const prevBoardDataRef = useRef(boardData);
@@ -189,6 +189,35 @@ export default function PlanPage() {
     if (Object.keys(localOverride).length === 0) return serverPlan;
     return { ...serverPlan, ...localOverride } as Plan;
   }, [serverPlan, localOverride]);
+
+  /** Board sessions filtered by merged plan.session_ids so checklist unlink updates table/charts immediately. */
+  const sessions = useMemo(() => {
+    const raw = boardData?.sessions ?? [];
+    const ids = plan?.session_ids ?? [];
+    if (ids.length === 0) return [];
+    const idSet = new Set(ids);
+    return raw.filter(s => idSet.has(s.id));
+  }, [boardData?.sessions, plan?.session_ids]);
+
+  const runPlanSessionCleanup = useCallback(
+    async (opts: { prune_deleted?: boolean; align_to_checklist?: boolean }) => {
+      if (!currentPlan?.id) return;
+      setCleanupBusy(true);
+      try {
+        await apiPost<{ ok: boolean }>(`/api/plans/${currentPlan.id}/cleanup-sessions`, {
+          prune_deleted: opts.prune_deleted ?? true,
+          align_to_checklist: opts.align_to_checklist ?? false,
+        });
+        setLocalOverride({});
+        await qc.invalidateQueries({ queryKey: ['weekend-plans', weekendId] });
+        await qc.invalidateQueries({ queryKey: ['plan-board-data', currentPlan.id] });
+        await refetchBoard();
+      } finally {
+        setCleanupBusy(false);
+      }
+    },
+    [currentPlan?.id, weekendId, qc, refetchBoard],
+  );
 
   if (needsCreate && currentCar) {
     return (
@@ -324,6 +353,51 @@ export default function PlanPage() {
 
         {/* Right: board zones — analysis-first order */}
         <div className="plan-board" style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div
+            className="card"
+            style={{
+              padding: '10px 12px',
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: 12,
+            }}
+          >
+            <span className="text-muted" style={{ marginRight: 4 }}>
+              Session list repair
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={cleanupBusy}
+              onClick={() => {
+                void runPlanSessionCleanup({ prune_deleted: true, align_to_checklist: false });
+              }}
+            >
+              {cleanupBusy ? 'Working…' : 'Remove deleted sessions'}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={cleanupBusy}
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    'Align the plan session list with the checklist?\n\n' +
+                      'This removes IDs that are only on the board (from “Add session”) and not on any checklist step. ' +
+                      'Use this to fix leftovers after unlink bugs.\n\n' +
+                      'Sessions linked from checklist steps are kept.',
+                  )
+                ) {
+                  return;
+                }
+                void runPlanSessionCleanup({ prune_deleted: true, align_to_checklist: true });
+              }}
+            >
+              Align with checklist…
+            </Button>
+          </div>
           <PlanPlanHeader plan={plan} sessions={sessions} onChange={handlePlanFieldChange} pressureUnit={pressureUnit} tempUnit={tempUnit} />
           <PlanSessionTable
             plan={plan}

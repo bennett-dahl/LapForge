@@ -334,6 +334,7 @@ function PlanChartReadout({
   xCursorField: 'distance' | 'time';
   series: Record<string, number[]>;
   channelMeta: Record<string, { label: string; unit?: string; category?: string }>;
+  /** Session / plan cold pressure target — always PSI in API and plan JSON. */
   target: number | null;
   pressureUnit: PressureUnit;
   showTemps: boolean;
@@ -342,57 +343,84 @@ function PlanChartReadout({
   const store = useCursorStore();
   const [corners, setCorners] = useState<ReadoutCorner[] | null>(null);
 
+  const updateCornersFromStore = useCallback(() => {
+    const snap = store.getSnapshot();
+    const cx = xCursorField === 'distance' ? snap.distance : snap.time;
+    if (cx == null) {
+      setCorners(null);
+      return;
+    }
+
+    let idx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < xValues.length; i++) {
+      const d = Math.abs(xValues[i] - cx);
+      if (d < bestDist) {
+        bestDist = d;
+        idx = i;
+      }
+    }
+
+    const out: ReadoutCorner[] = [];
+    for (const ch of PRESSURE_CHANNELS) {
+      const arr = series[ch];
+      if (!arr || idx >= arr.length) continue;
+      const rawP = arr[idx];
+      if (rawP == null) continue;
+      const corner = ch.replace('tpms_press_', '');
+      const meta = channelMeta[ch];
+      const pStorage = storagePressureUnit(meta, ch);
+      const displayP = convertPressure(rawP, pStorage, pressureUnit);
+      const displayTarget =
+        target != null ? convertPressure(target, 'psi', pressureUnit) : null;
+
+      const tempCh = `tpms_temp_${corner}`;
+      const tempArr = series[tempCh];
+      let tempVal: number | null =
+        showTemps && tempArr && idx < tempArr.length ? tempArr[idx] : null;
+      if (tempVal != null && Number.isFinite(tempVal)) {
+        const tempMeta = channelMeta[tempCh];
+        const isCelsius = isCelsiusTelemetryChannel(tempMeta, tempCh);
+        if (isCelsius && tempUnit === 'f') {
+          tempVal = convertTemp(tempVal, 'c', 'f');
+        } else if (!isCelsius && tempUnit === 'c') {
+          tempVal = convertTemp(tempVal, 'f', 'c');
+        }
+      } else {
+        tempVal = null;
+      }
+
+      out.push({
+        label: meta?.label ?? corner.toUpperCase(),
+        pressure: displayP,
+        delta: displayTarget != null ? displayP - displayTarget : null,
+        temp: tempVal,
+        color: CORNER_COLORS[corner] ?? '#888',
+      });
+    }
+    setCorners(out.length > 0 ? out : null);
+  }, [
+    store,
+    xValues,
+    xCursorField,
+    series,
+    channelMeta,
+    target,
+    showTemps,
+    pressureUnit,
+    tempUnit,
+  ]);
+
   useEffect(() => {
     return store.subscribe(() => {
-      const snap = store.getSnapshot();
-      const cx = xCursorField === 'distance' ? snap.distance : snap.time;
-      if (cx == null) { setCorners(null); return; }
-
-      let idx = 0;
-      let bestDist = Infinity;
-      for (let i = 0; i < xValues.length; i++) {
-        const d = Math.abs(xValues[i] - cx);
-        if (d < bestDist) { bestDist = d; idx = i; }
-      }
-
-      const out: ReadoutCorner[] = [];
-      for (const ch of PRESSURE_CHANNELS) {
-        const arr = series[ch];
-        if (!arr || idx >= arr.length) continue;
-        const rawP = arr[idx];
-        if (rawP == null) continue;
-        const corner = ch.replace('tpms_press_', '');
-        const meta = channelMeta[ch];
-        const pStorage = storagePressureUnit(meta, ch);
-        const displayP = convertPressure(rawP, pStorage, pressureUnit);
-        const displayTarget = target != null ? convertPressure(target, pStorage, pressureUnit) : null;
-
-        const tempCh = `tpms_temp_${corner}`;
-        const tempArr = series[tempCh];
-        let tempVal: number | null = showTemps && tempArr && idx < tempArr.length ? tempArr[idx] : null;
-        if (tempVal != null && Number.isFinite(tempVal)) {
-          const tempMeta = channelMeta[tempCh];
-          const isCelsius = isCelsiusTelemetryChannel(tempMeta, tempCh);
-          if (isCelsius && tempUnit === 'f') {
-            tempVal = convertTemp(tempVal, 'c', 'f');
-          } else if (!isCelsius && tempUnit === 'c') {
-            tempVal = convertTemp(tempVal, 'f', 'c');
-          }
-        } else {
-          tempVal = null;
-        }
-
-        out.push({
-          label: meta?.label ?? corner.toUpperCase(),
-          pressure: displayP,
-          delta: displayTarget != null ? displayP - displayTarget : null,
-          temp: tempVal,
-          color: CORNER_COLORS[corner] ?? '#888',
-        });
-      }
-      setCorners(out.length > 0 ? out : null);
+      updateCornersFromStore();
     });
-  }, [store, xValues, xCursorField, series, channelMeta, target, showTemps]);
+  }, [store, updateCornersFromStore]);
+
+  /** Recompute when units/target/series change without requiring another cursor move. */
+  useEffect(() => {
+    updateCornersFromStore();
+  }, [updateCornersFromStore]);
 
   if (!corners) return null;
 

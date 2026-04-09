@@ -28,14 +28,24 @@ git branch --show-current
 - Stable requires `main`. Beta requires `beta`.
 - If the branch is wrong, **stop and warn** — do not proceed. The user may be working on the wrong branch.
 
-### Step 3 — Check for uncommitted changes
+### Step 3 — Uncommitted changes (working tree)
 
 Run:
 ```powershell
 git status --short
 ```
 
-If the working tree is dirty (any modified, staged, or untracked files), **warn the user**. A release should be cut from a clean, committed state. Ask them to confirm before continuing.
+- If the working tree is **clean**, continue to Step 4.
+
+- If the working tree is **dirty** and the current branch **already matches** the channel from Step 2 (`main` for stable, `beta` for beta), **do not stop or ask for confirmation**. Stage everything, commit with a concise descriptive message that summarizes the changes, and push the branch so the remote matches what you are about to tag:
+  ```powershell
+  git add -A
+  git commit -m "<descriptive message>"
+  git push origin main   # stable — use `beta` for beta channel
+  ```
+  Then continue to Step 4.
+
+If the branch did **not** match the channel, you already stopped in Step 2 — **never** commit or push on the wrong branch.
 
 ### Step 4 — Determine the new version
 

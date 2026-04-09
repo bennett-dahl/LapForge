@@ -75,9 +75,9 @@ Partial steps: `build.py --backend-only` or `build.py --electron-only` (see docs
 
 ## Shipping a release
 
-Do not hand-roll tag steps from memory. Use the [deploy skill](../deploy/SKILL.md) (`/deploy`): branch check, clean tree, version bump (stable), tag, push.
+Do not hand-roll tag steps from memory. Use the [deploy skill](../deploy/SKILL.md) (`/deploy`): branch check, auto-commit and push when the tree is dirty **only if** the branch already matches the channel, then version bump (stable), tag, push tags.
 
-If the working tree is dirty when `/deploy` is invoked, **commit all changes automatically** (stage everything, write a descriptive commit message) and then proceed with tagging and pushing. Do not stop and ask — the user expects deploy to handle the full commit-tag-push flow in one shot.
+If the working tree is dirty and the branch matches stable/beta as required, **commit all changes automatically** (stage everything, descriptive message), **push the branch**, then proceed with version bump (if stable), tag, and push tags. Do not stop and ask for a dirty tree when the branch is correct.
 
 ## Conventions for agents
 

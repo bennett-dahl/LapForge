@@ -45,7 +45,7 @@ export default function PlanChecklist({ plan, carDriverId, onUpdate, refetchBoar
     refetchBoard();
   }
 
-  function unlinkSessionFromStep(stepKey: string, sessionId: string) {
+  async function unlinkSessionFromStep(stepKey: string, sessionId: string) {
     const step = plan.checklist.find(s => s.key === stepKey);
     if (!step) return;
 
@@ -58,7 +58,27 @@ export default function PlanChecklist({ plan, carDriverId, onUpdate, refetchBoar
         status: (newStepSids.length > 0 || newSetupIds.length > 0) ? 'linked' as const : 'not_started' as const,
       } : s,
     );
-    onUpdate({ checklist: updatedChecklist } as Partial<Plan>);
+
+    /** Sessions still referenced by any checklist step after this unlink. */
+    const unionAfter = new Set(updatedChecklist.flatMap(s => s.session_ids));
+    /**
+     * Keep `plan.session_ids` in sync: drop this session if it no longer appears on any step,
+     * but retain sessions that were added only via the board "Add session" (not on any step).
+     */
+    const newPlanSids = plan.session_ids.filter(sid => {
+      if (unionAfter.has(sid)) return true;
+      return sid !== sessionId;
+    });
+
+    onUpdate({
+      checklist: updatedChecklist,
+      session_ids: newPlanSids,
+    } as Partial<Plan>);
+
+    if (!newPlanSids.includes(sessionId)) {
+      await apiPatch(`/api/sessions/${sessionId}`, { planning_tag: null });
+    }
+    refetchBoard();
   }
 
   function linkSetupToStep(stepKey: string, setupId: string) {
