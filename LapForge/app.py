@@ -34,7 +34,7 @@ from flask import (
 )
 
 from LapForge.parsers.pi_toolbox_export import load_pi_toolbox_export, merge_parsed_outings, read_file_metadata
-from LapForge.models import CarDriver, Session, SessionType, TireSet, TrackSection, Weekend
+from LapForge.models import CarDriver, Session, TireSet, TrackSection, Weekend, normalize_session_type
 from LapForge.processing import (
     BAR_TO_PSI,
     CHART_MAX_POINTS,
@@ -118,6 +118,14 @@ def create_app() -> Flask:
         "section_lat_g_threshold": None,
         "section_min_corner_length_m": 30,
         "section_merge_gap_m": 50,
+        "session_type_options": [
+            "Practice 1",
+            "Practice 2",
+            "Practice 3",
+            "Qualifying",
+            "Race 1",
+            "Race 2",
+        ],
     }
 
     def _get_preferences() -> dict:
@@ -449,7 +457,7 @@ def create_app() -> Flask:
             else:
                 src["driver"] = session.driver
                 src["car"] = session.car
-                src["session_name"] = f"{session.track} — {session.session_type.value}" if session.track else None
+                src["session_name"] = f"{session.track} — {session.session_type}" if session.track else None
 
             map_lap_blob = {
                 "distances": ref_dists,
@@ -902,10 +910,7 @@ def create_app() -> Flask:
             car_driver_id = request.form.get("car_driver_id") or active_id
             if not car_driver_id:
                 return jsonify({"error": "Select or create a car/driver."}), 400
-            try:
-                session_type = SessionType(session_type_val or "Practice 1")
-            except ValueError:
-                session_type = SessionType.PRACTICE_1
+            session_type = normalize_session_type(session_type_val)
             session_id = str(uuid.uuid4())
             import shutil
 
@@ -1107,10 +1112,7 @@ def create_app() -> Flask:
         if request.form.get("car_driver_id"):
             session.car_driver_id = request.form["car_driver_id"]
         if request.form.get("session_type"):
-            try:
-                session.session_type = SessionType(request.form["session_type"])
-            except ValueError:
-                pass
+            session.session_type = normalize_session_type(request.form["session_type"])
         if "track" in request.form:
             session.track = request.form["track"]
         if "driver" in request.form:
@@ -1437,7 +1439,7 @@ def create_app() -> Flask:
                 raw_pres_out[cname] = vals
 
         car_driver = store.get_car_driver(sess.car_driver_id)
-        label = f"{sess.track} — {sess.session_type.value}"
+        label = f"{sess.track} — {sess.session_type}"
         if car_driver:
             label += f" ({car_driver.display_name()})"
 
@@ -1536,7 +1538,7 @@ def create_app() -> Flask:
         out = []
         for s in sessions:
             car_driver = store.get_car_driver(s.car_driver_id)
-            label = f"{s.track} — {s.session_type.value}"
+            label = f"{s.track} — {s.session_type}"
             if car_driver:
                 label += f" ({car_driver.display_name()})"
             out.append({"id": s.id, "label": label, "track": s.track})
@@ -1850,7 +1852,7 @@ def create_app() -> Flask:
                 tire_summary = summary_blob.get("pressure_summary_psi")
             tire_set = store.get_tire_set(sess.tire_set_id) if sess.tire_set_id else None
             sess_cd = store.get_car_driver(sess.car_driver_id)
-            label = f"{sess.track} — {sess.session_type.value}"
+            label = f"{sess.track} — {sess.session_type}"
             if sess_cd:
                 label += f" ({sess_cd.display_name()})"
             ro_fl = round(sess.roll_out_pressure_fl * BAR_TO_PSI, 2) if sess.roll_out_pressure_fl else None
@@ -1900,7 +1902,7 @@ def create_app() -> Flask:
             sessions_out.append({
                 "id": sess.id,
                 "label": label,
-                "session_type": sess.session_type.value,
+                "session_type": sess.session_type,
                 "target_pressure_psi": sess.target_pressure_psi,
                 "roll_out_psi": {"fl": ro_fl, "fr": ro_fr, "rl": ro_rl, "rr": ro_rr},
                 "ambient_temp_c": sess.ambient_temp_c,
@@ -2139,7 +2141,7 @@ def create_app() -> Flask:
 
     def _session_layout_meta(sess: Session) -> dict[str, str | None]:
         """Extract driver/car/session-name from a Session for track-layout metadata."""
-        sess_name = f"{sess.track} — {sess.session_type.value}" if sess.track else sess.session_type.value
+        sess_name = f"{sess.track} — {sess.session_type}" if sess.track else sess.session_type
         return {
             "source_driver": sess.driver or None,
             "source_car": sess.car or None,
@@ -2215,15 +2217,7 @@ def create_app() -> Flask:
                 raise
 
         if "session_type" in data:
-            from .models import SessionType as ST
-            raw_type = str(data["session_type"]).strip()
-            matched = None
-            for st_val in ST:
-                if st_val.value == raw_type or st_val.name == raw_type:
-                    matched = st_val
-                    break
-            if matched:
-                session.session_type = matched
+            session.session_type = normalize_session_type(str(data["session_type"]))
 
         for field in ("tire_set_id", "track_layout_id", "car_driver_id",
                        "ambient_temp_c", "track_temp_c", "weather_condition",
@@ -2311,7 +2305,7 @@ def create_app() -> Flask:
             out.append({
                 "id": s.id,
                 "car_driver_id": s.car_driver_id,
-                "session_type": s.session_type.value,
+                "session_type": s.session_type,
                 "track": s.track,
                 "driver": s.driver,
                 "car": s.car,
@@ -2406,7 +2400,7 @@ def create_app() -> Flask:
         session_map = {}
         for s in sessions:
             if s.track_layout_id:
-                session_map[s.track_layout_id] = f"{s.car} / {s.track} / {s.session_type.value}"
+                session_map[s.track_layout_id] = f"{s.car} / {s.track} / {s.session_type}"
         return jsonify({
             "layouts": [tl.to_dict() for tl in layouts],
             "session_map": session_map,
@@ -2414,12 +2408,7 @@ def create_app() -> Flask:
 
     @app.route("/api/settings")
     def api_settings_get():
-        prefs = {}
-        if PREFERENCES_PATH.exists():
-            try:
-                prefs = json.loads(PREFERENCES_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+        prefs = _get_preferences()
         user = get_current_user()
         return jsonify({
             "preferences": prefs,
@@ -2431,12 +2420,7 @@ def create_app() -> Flask:
     @app.route("/api/settings", methods=["PATCH"])
     def api_settings_update():
         data = request.get_json(silent=True) or {}
-        prefs = {}
-        if PREFERENCES_PATH.exists():
-            try:
-                prefs = json.loads(PREFERENCES_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+        prefs = _get_preferences()
         prefs.update(data)
         PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
         PREFERENCES_PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")

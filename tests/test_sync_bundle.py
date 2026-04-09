@@ -117,12 +117,12 @@ class TestBuildAndRestoreBundle:
 
     def test_round_trip_after_orphan_cleanup(self, tmp_data_root, store, tmp_path):
         """Backup/restore works when uploads only contains referenced files (post-cleanup)."""
-        from LapForge.models import Session, SessionType
+        from LapForge.models import Session
         import uuid as _uuid
         cd = store.add_car_driver("911", "Alice")
         sid = str(_uuid.uuid4())
         (store.uploads_dir / f"{sid}.txt").write_text("export data")
-        s = Session(id=sid, car_driver_id=cd.id, session_type=SessionType.PRACTICE_1,
+        s = Session(id=sid, car_driver_id=cd.id, session_type="Practice 1",
                     track="T", driver="D", car="C", outing_number="1", session_number="1",
                     file_path=f"uploads/{sid}.txt")
         store.add_session(s)

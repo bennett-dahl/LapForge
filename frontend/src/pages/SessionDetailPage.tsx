@@ -25,6 +25,7 @@ import {
   type TempUnit,
 } from '../utils/units';
 import SessionRolloutPressureModal from '../components/session/SessionRolloutPressureModal';
+import { mergeSessionTypeOptions } from '../utils/sessionTypes';
 
 const LS_SESSION_PRESSURE = 'session_pressure_unit';
 const LS_SESSION_TEMP = 'session_temp_unit';
@@ -252,6 +253,15 @@ export default function SessionDetailPage() {
 
   const session = data?.session as Record<string, string> | undefined;
   const trackName = session?.track ? String(session.track) : '';
+
+  const sessionTypeOptions = useMemo(
+    () =>
+      mergeSessionTypeOptions(
+        settingsData?.preferences?.session_type_options as string[] | undefined,
+        session ? String(session.session_type ?? '') : undefined,
+      ),
+    [settingsData?.preferences?.session_type_options, session?.session_type],
+  );
 
   const { data: trackSections = [], isLoading: sectionsLoading } = useQuery({
     queryKey: ['track-sections', trackName],
@@ -713,6 +723,7 @@ export default function SessionDetailPage() {
               <SessionInfoPanel
                 session={data}
                 tempUnit={tempUnit}
+                sessionTypeOptions={sessionTypeOptions}
                 onUpdate={(fields) => updateMut.mutate(fields)}
               />
             )}
@@ -725,10 +736,12 @@ export default function SessionDetailPage() {
 function SessionInfoPanel({
   session: data,
   tempUnit,
+  sessionTypeOptions,
   onUpdate,
 }: {
   session: SessionDetailResponse;
   tempUnit: TempUnit;
+  sessionTypeOptions: string[];
   onUpdate: (fields: Record<string, unknown>) => void;
 }) {
   const s = data.session as Record<string, unknown>;
@@ -776,11 +789,6 @@ function SessionInfoPanel({
       </div>
     );
   }
-
-  const SESSION_TYPES = [
-    'Practice 1', 'Practice 2', 'Practice 3',
-    'Qualifying', 'Race 1', 'Race 2',
-  ];
 
   function handleSave() {
     onUpdate({
@@ -848,7 +856,7 @@ function SessionInfoPanel({
                   value={form.session_type}
                   onChange={(e) => setForm({ ...form, session_type: e.target.value })}
                 >
-                  {SESSION_TYPES.map((t) => (
+                  {sessionTypeOptions.map((t) => (
                     <option key={t} value={t}>{t}</option>
                   ))}
                 </select>

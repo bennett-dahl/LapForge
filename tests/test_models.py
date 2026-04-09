@@ -71,7 +71,7 @@ class TestTireSet:
 class TestSession:
     def test_round_trip(self):
         s = Session(
-            id="s1", car_driver_id="cd1", session_type=SessionType.QUALIFYING,
+            id="s1", car_driver_id="cd1", session_type="Qualifying",
             track="Laguna Seca", driver="Test", car="911",
             outing_number="1", session_number="3",
             ambient_temp_c=25.0, target_pressure_psi=27.0,
@@ -81,7 +81,7 @@ class TestSession:
         assert d["session_type"] == "Qualifying"
         assert d["weather_condition"] == "Light Rain"
         s2 = Session.from_dict(d)
-        assert s2.session_type is SessionType.QUALIFYING
+        assert s2.session_type == "Qualifying"
         assert s2.target_pressure_psi == 27.0
         assert s2.weather_condition == "Light Rain"
 
@@ -89,7 +89,7 @@ class TestSession:
         s = Session.from_dict({
             "id": "s2", "car_driver_id": "cd1",
         })
-        assert s.session_type is SessionType.PRACTICE_1
+        assert s.session_type == "Practice 1"
         assert s.track == ""
         assert s.parsed_data is None
         assert s.planning_tag is None
@@ -98,7 +98,7 @@ class TestSession:
 
     def test_bleed_events_round_trip(self):
         s = Session(
-            id="s3", car_driver_id="cd1", session_type=SessionType.PRACTICE_1,
+            id="s3", car_driver_id="cd1", session_type="Practice 1",
             track="T", driver="D", car="C", outing_number="1", session_number="1",
             bleed_events=[{"corner": "fl", "psi_removed": 0.5, "bleed_type": "hot"}],
             planning_tag="stabilization",

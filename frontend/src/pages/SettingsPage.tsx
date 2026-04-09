@@ -5,6 +5,10 @@ import { apiGet, apiPatch, apiPost } from '../api/client';
 import type { SettingsResponse } from '../types/api';
 import Button from '../components/ui/Button';
 import SyncPanel from '../components/SyncPanel';
+import {
+  DEFAULT_SESSION_TYPE_OPTIONS,
+  parseSessionTypeOptionsText,
+} from '../utils/sessionTypes';
 
 type Tab = 'preferences' | 'data' | 'backup' | 'sync' | 'account';
 
@@ -55,6 +59,9 @@ export default function SettingsPage() {
           : '',
       section_min_corner_length_m: String(p.section_min_corner_length_m ?? 30),
       section_merge_gap_m: String(p.section_merge_gap_m ?? 50),
+      session_type_options_text: Array.isArray(p.session_type_options)
+        ? (p.session_type_options as string[]).join('\n')
+        : DEFAULT_SESSION_TYPE_OPTIONS.join('\n'),
     });
   }
 
@@ -66,6 +73,7 @@ export default function SettingsPage() {
   function handleSavePrefs(e: React.FormEvent) {
     e.preventDefault();
     const latRaw = (prefs.section_lat_g_threshold ?? '').trim();
+    const sessionTypeOpts = parseSessionTypeOptionsText(prefs.session_type_options_text ?? '');
     saveMut.mutate({
       default_target_pressure_psi: parseFloat(prefs.default_target_pressure_psi),
       default_pressure_unit: prefs.default_pressure_unit,
@@ -74,6 +82,8 @@ export default function SettingsPage() {
       section_lat_g_threshold: latRaw === '' ? null : parseFloat(latRaw),
       section_min_corner_length_m: parseFloat(prefs.section_min_corner_length_m) || 30,
       section_merge_gap_m: parseFloat(prefs.section_merge_gap_m) || 50,
+      session_type_options:
+        sessionTypeOpts.length > 0 ? sessionTypeOpts : [...DEFAULT_SESSION_TYPE_OPTIONS],
     });
   }
 
@@ -297,6 +307,23 @@ export default function SettingsPage() {
               />
             </label>
             <p className="muted">Merge gap in SI meters. Telemetry distance is labeled and ticked in km or mi per preference.</p>
+
+            <label className="form-label">
+              Session types
+              <textarea
+                className="form-input"
+                rows={8}
+                spellCheck={false}
+                value={prefs.session_type_options_text ?? ''}
+                onChange={(e) =>
+                  setPrefs({ ...prefs, session_type_options_text: e.target.value })
+                }
+                placeholder={DEFAULT_SESSION_TYPE_OPTIONS.join('\n')}
+              />
+            </label>
+            <p className="muted">
+              One label per line (e.g. Practice 1, Qualifying). Used for session type dropdowns on upload and session info.
+            </p>
 
             <div className="form-actions">
               <Button type="submit">Save</Button>

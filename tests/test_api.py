@@ -25,14 +25,14 @@ def loaded_client(flask_app, tmp_data_root):
 
     from LapForge.parsers.pi_toolbox_export import load_pi_toolbox_export
     from LapForge.processing import process_session, sanitize_for_json
-    from LapForge.models import Session, SessionType
+    from LapForge.models import Session
 
     parsed = load_pi_toolbox_export(dest)
     processed = sanitize_for_json(process_session(parsed))
     session = Session(
         id=session_id,
         car_driver_id=cd.id,
-        session_type=SessionType.PRACTICE_1,
+        session_type="Practice 1",
         track="Test Track",
         driver="Test Driver",
         car="911",
@@ -330,7 +330,7 @@ class TestSessionAPI:
         """When session blob has no usable reference_lap, use track layout geometry."""
         from pathlib import Path
 
-        from LapForge.models import Session, SessionType
+        from LapForge.models import Session
         from LapForge.parsers.pi_toolbox_export import load_pi_toolbox_export
         from LapForge.processing import process_session, sanitize_for_json
 
@@ -343,7 +343,7 @@ class TestSessionAPI:
         s2 = Session(
             id=sid,
             car_driver_id=cd.id,
-            session_type=SessionType.PRACTICE_1,
+            session_type="Practice 1",
             track="MergeTrack",
             driver="Test Driver",
             car="911",
@@ -434,6 +434,9 @@ class TestSettingsAPI:
         assert "preferences" in data
         assert "data_root" in data
         assert "oauth_enabled" in data
+        prefs = data["preferences"]
+        assert isinstance(prefs.get("session_type_options"), list)
+        assert "Practice 1" in prefs["session_type_options"]
 
     def test_update(self, client):
         resp = client.patch(

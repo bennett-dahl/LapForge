@@ -12,7 +12,6 @@ from LapForge.models import (
     Plan,
     SavedComparison,
     Session,
-    SessionType,
     Setup,
     TireSet,
     TrackLayout,
@@ -108,7 +107,7 @@ class TestSessionCRUD:
     def _make_session(self, store, car_driver_id: str, **kwargs) -> Session:
         defaults = {
             "id": None,
-            "session_type": SessionType.PRACTICE_1,
+            "session_type": "Practice 1",
             "track": "Test Track",
             "driver": "Test",
             "car": "911",
@@ -128,7 +127,7 @@ class TestSessionCRUD:
         got = store.get_session(s.id)
         assert got is not None
         assert got.track == "Laguna Seca"
-        assert got.session_type is SessionType.PRACTICE_1
+        assert got.session_type == "Practice 1"
         assert got.weather_condition == "Overcast"
 
     def test_created_at_auto_set(self, store):
@@ -417,7 +416,7 @@ class TestTrackLayoutCRUD:
         layout = store.add_track_layout("L", "T", {"lat": []})
         s = Session(
             id=str(uuid.uuid4()), car_driver_id=cd.id,
-            session_type=SessionType.PRACTICE_1,
+            session_type="Practice 1",
             track="T", driver="A", car="911",
             outing_number="1", session_number="1",
             track_layout_id=layout.id,
@@ -594,7 +593,7 @@ class TestSetupCRUD:
         cd = store.add_car_driver("911", "Alice")
         sess = Session(
             id=str(uuid.uuid4()), car_driver_id=cd.id,
-            session_type=SessionType.PRACTICE_1,
+            session_type="Practice 1",
             track="T", driver="A", car="911",
             outing_number="1", session_number="1",
         )

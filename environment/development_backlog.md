@@ -17,6 +17,16 @@
 
 ### High priority (bugs)
 
+#### Session detail — lap exclude/include races optimistic updates
+
+**Problem:** Toggling exclude/include on laps quickly can cause selections to flip back and forth. Each click triggers a PATCH and optimistic cache updates; overlapping requests and refetches fight each other.
+
+**Expected:** Let users change excluded laps locally (draft state), then apply in one step with a **Recalc metrics** (or **Apply lap exclusions**) control that sends a single `excluded_laps` PATCH and refreshes session detail. No per-click server round-trip.
+
+**Key files:** `frontend/src/pages/SessionDetailPage.tsx` (`excludeMut`, `setExcludedInCache`), `frontend/src/components/dashboard/Dashboard.tsx`, `frontend/src/components/tools/SectionMetrics.tsx`, `LapForge/app.py` (`api_session_update` / `_apply_excluded_laps_to_session`).
+
+---
+
 #### Plan checklist — removing a session does not update summary or chart
 
 **Problem:** When a session is unlinked from a plan checklist section, the **summary** (aggregated session list / metrics at the plan level) still includes the removed session, and the **chart** for that section remains visible instead of disappearing when no sessions are linked.

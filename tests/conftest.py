@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 from LapForge.config import AppConfig
 from LapForge.session_store import SessionStore
-from LapForge.models import CarDriver, Session, SessionType
+from LapForge.models import CarDriver, Session
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ def sample_session(store: SessionStore, sample_car_driver: CarDriver, sample_par
     session = Session(
         id="test-session-1",
         car_driver_id=sample_car_driver.id,
-        session_type=SessionType.PRACTICE_1,
+        session_type="Practice 1",
         track="Test Track",
         driver="Test Driver",
         car="911",

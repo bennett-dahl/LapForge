@@ -26,6 +26,12 @@ class SessionType(str, Enum):
     RACE_2 = "Race 2"
 
 
+def normalize_session_type(raw: str | None) -> str:
+    """Free-form session type label (configure options in preferences)."""
+    s = (raw or "").strip()
+    return s if s else SessionType.PRACTICE_1.value
+
+
 @dataclass
 class CarDriver:
     id: str
@@ -89,7 +95,7 @@ class TireSet:
 class Session:
     id: str
     car_driver_id: str
-    session_type: SessionType
+    session_type: str
     track: str
     driver: str  # display
     car: str  # display

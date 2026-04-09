@@ -17,7 +17,6 @@ from .models import (
     Plan,
     SavedComparison,
     Session,
-    SessionType,
     Setup,
     TireSet,
     TrackLayout,
@@ -486,7 +485,7 @@ class SessionStore:
                 (
                     session.id,
                     session.car_driver_id,
-                    session.session_type.value,
+                    session.session_type,
                     session.track,
                     session.driver,
                     session.car,
@@ -526,7 +525,7 @@ class SessionStore:
                    file_path = ?, parsed_data_json = ?, session_summary_json = ? WHERE id = ?""",
                 (
                     session.car_driver_id,
-                    session.session_type.value,
+                    session.session_type,
                     session.track,
                     session.driver,
                     session.car,
@@ -578,7 +577,7 @@ class SessionStore:
         return Session(
             id=row[0],
             car_driver_id=row[1],
-            session_type=SessionType(row[2]),
+            session_type=str(row[2] or "Practice 1"),
             track=row[3] or "",
             driver=row[4] or "",
             car=row[5] or "",
@@ -638,7 +637,7 @@ class SessionStore:
                 Session(
                     id=row[0],
                     car_driver_id=row[1],
-                    session_type=SessionType(row[2]),
+                    session_type=str(row[2] or "Practice 1"),
                     track=row[3] or "",
                     driver=row[4] or "",
                     car=row[5] or "",

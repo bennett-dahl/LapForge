@@ -1,25 +1,16 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet, apiUploadWithProgress } from '../api/client';
 import { useUploadProgress } from '../contexts/UploadProgressContext';
 import type { CarDriver } from '../types/models';
-import { SessionType } from '../types/models';
-import type { UploadParseResponse } from '../types/api';
+import type { UploadParseResponse, SettingsResponse } from '../types/api';
 import Button from '../components/ui/Button';
+import { DEFAULT_SESSION_TYPE_OPTIONS, mergeSessionTypeOptions } from '../utils/sessionTypes';
 
-const SESSION_TYPE_OPTIONS: SessionType[] = [
-  SessionType.Practice1,
-  SessionType.Practice2,
-  SessionType.Practice3,
-  SessionType.Qualifying,
-  SessionType.Race1,
-  SessionType.Race2,
-];
-
-function coerceSessionType(v: string | undefined): SessionType {
-  if (!v) return SessionType.Practice1;
-  const found = SESSION_TYPE_OPTIONS.find((o) => o === v);
-  return found ?? SessionType.Practice1;
+function coerceSessionType(options: string[], v: string | undefined): string {
+  if (!v) return options[0] ?? DEFAULT_SESSION_TYPE_OPTIONS[0]!;
+  const found = options.find((o) => o === v);
+  return found ?? options[0] ?? DEFAULT_SESSION_TYPE_OPTIONS[0]!;
 }
 
 function strMeta(v: string | number | undefined): string {
@@ -39,6 +30,21 @@ export default function UploadPage() {
     queryFn: () => apiGet<CarDriver[]>('/api/car-drivers'),
   });
 
+  const { data: settingsData } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => apiGet<SettingsResponse>('/api/settings'),
+  });
+
+  const sessionTypeOpts = settingsData?.preferences?.session_type_options;
+  const sessionTypeSelectOptions = useMemo(
+    () =>
+      mergeSessionTypeOptions(
+        Array.isArray(sessionTypeOpts) ? sessionTypeOpts : undefined,
+        undefined,
+      ),
+    [sessionTypeOpts],
+  );
+
   const fileRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState('');
@@ -46,7 +52,7 @@ export default function UploadPage() {
   const [uploading, setUploading] = useState(false);
 
   const [formCd, setFormCd] = useState('');
-  const [formSessionType, setFormSessionType] = useState<SessionType>(SessionType.Practice1);
+  const [formSessionType, setFormSessionType] = useState<string>(DEFAULT_SESSION_TYPE_OPTIONS[0]!);
   const [formTrack, setFormTrack] = useState('');
   const [formDriver, setFormDriver] = useState('');
   const [formCar, setFormCar] = useState('');
@@ -59,13 +65,15 @@ export default function UploadPage() {
     const meta = parsed.metadata ?? {};
     const sessionTypeRaw =
       strMeta(fm.session_type) || meta.SessionType || meta.Session || '';
-    setFormSessionType(coerceSessionType(sessionTypeRaw || undefined));
+    setFormSessionType(
+      coerceSessionType(sessionTypeSelectOptions, sessionTypeRaw || undefined),
+    );
     setFormTrack(strMeta(fm.track) || meta.TrackName || meta.Track || '');
     setFormDriver(strMeta(fm.driver) || meta.DriverName || meta.Driver || '');
     setFormCar(strMeta(fm.car) || meta.CarName || meta.Car || '');
     setFormOutingNumber(strMeta(fm.outing_number) || meta.OutingNumber || '');
     setFormSessionNumber(strMeta(fm.session_number) || meta.SessionNumber || '');
-  }, [parsed]);
+  }, [parsed, sessionTypeSelectOptions]);
 
   const busy = uploadProgress.phase === 'uploading' || uploadProgress.phase === 'processing';
 
@@ -246,9 +254,9 @@ export default function UploadPage() {
               className="form-select"
               required
               value={formSessionType}
-              onChange={(e) => setFormSessionType(e.target.value as SessionType)}
+              onChange={(e) => setFormSessionType(e.target.value)}
             >
-              {SESSION_TYPE_OPTIONS.map((st) => (
+              {sessionTypeSelectOptions.map((st) => (
                 <option key={st} value={st}>
                   {st}
                 </option>

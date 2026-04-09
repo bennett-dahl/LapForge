@@ -116,7 +116,7 @@ def seed_data(e2e_server, e2e_data_root):
 
     from LapForge.parsers.pi_toolbox_export import load_pi_toolbox_export
     from LapForge.processing import process_session, sanitize_for_json
-    from LapForge.models import Session, SessionType
+    from LapForge.models import Session
 
     parsed = load_pi_toolbox_export(dest)
     processed = sanitize_for_json(process_session(parsed))
@@ -124,7 +124,7 @@ def seed_data(e2e_server, e2e_data_root):
     session = Session(
         id="e2e-session-1",
         car_driver_id=cd.id,
-        session_type=SessionType.PRACTICE_1,
+        session_type="Practice 1",
         track="Test Track",
         driver="E2E Driver",
         car="911",

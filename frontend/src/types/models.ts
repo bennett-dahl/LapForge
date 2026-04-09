@@ -1,3 +1,4 @@
+/** Built-in session type labels; sessions store a free-form string (see Settings → session types). */
 export enum SessionType {
   Practice1 = 'Practice 1',
   Practice2 = 'Practice 2',
@@ -37,7 +38,7 @@ export interface BleedEvent {
 export interface Session {
   id: string;
   car_driver_id: string;
-  session_type: SessionType;
+  session_type: string;
   track: string;
   driver: string;
   car: string;
@@ -224,6 +225,8 @@ export interface Preferences {
   default_pressure_unit: string;
   default_temp_unit: string;
   default_distance_unit: string;
+  /** Ordered labels for session type dropdowns (upload, session info). */
+  session_type_options?: string[];
   [key: string]: unknown;
 }
 
