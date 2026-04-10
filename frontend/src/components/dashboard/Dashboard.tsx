@@ -113,6 +113,10 @@ interface DashboardProps {
   distanceUnit?: DistanceUnit;
   excludedLaps?: number[];
   onToggleExcludeLap?: (segmentIndex: number) => void;
+  hasExclusionDraft?: boolean;
+  onApplyExclusions?: () => void;
+  onDiscardExclusions?: () => void;
+  applyExclusionsPending?: boolean;
 }
 
 export default function Dashboard({
@@ -127,6 +131,10 @@ export default function Dashboard({
   distanceUnit = 'km',
   excludedLaps,
   onToggleExcludeLap,
+  hasExclusionDraft,
+  onApplyExclusions,
+  onDiscardExclusions,
+  applyExclusionsPending,
 }: DashboardProps) {
   const cursorStore = useCursorStore();
   const setSyncedXRange = useCallback((min: number, max: number) => cursorStore.setXRange(min, max), [cursorStore]);
@@ -499,6 +507,10 @@ export default function Dashboard({
                     onLapClick={onLapTimesRowClick}
                     excludedLaps={excludedLaps}
                     onToggleExcludeLap={onToggleExcludeLap}
+                    hasExclusionDraft={hasExclusionDraft}
+                    onApplyExclusions={onApplyExclusions}
+                    onDiscardExclusions={onDiscardExclusions}
+                    applyExclusionsPending={applyExclusionsPending}
                   />
                 )}
                 {mod.type === 'tire-summary' && (

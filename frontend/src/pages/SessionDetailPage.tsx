@@ -26,6 +26,7 @@ import {
 } from '../utils/units';
 import SessionRolloutPressureModal from '../components/session/SessionRolloutPressureModal';
 import { mergeSessionTypeOptions } from '../utils/sessionTypes';
+import { toggleExcludedLap } from '../utils/excludedLaps';
 
 const LS_SESSION_PRESSURE = 'session_pressure_unit';
 const LS_SESSION_TEMP = 'session_temp_unit';
@@ -153,6 +154,8 @@ export default function SessionDetailPage() {
     queryKey: ['session-detail', id],
     queryFn: () => apiGet<SessionDetailResponse>(`/api/sessions/${id}/detail`),
     enabled: !!id,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
@@ -271,7 +274,7 @@ export default function SessionDetailPage() {
 
   const dashData = data?.dashboard_data as DashboardData | null;
 
-  const excludedLaps = useMemo(() => {
+  const savedExcludedLaps = useMemo(() => {
     if (dashData && Array.isArray(dashData.excluded_laps)) {
       return [...new Set((dashData.excluded_laps as unknown[]).map((x) => Number(x)))].sort(
         (a, b) => a - b,
@@ -279,60 +282,39 @@ export default function SessionDetailPage() {
     }
     return [0];
   }, [dashData && Array.isArray(dashData.excluded_laps) ? JSON.stringify(dashData.excluded_laps) : null]);
-  const excludedLapsRef = useRef(excludedLaps);
-  excludedLapsRef.current = excludedLaps;
 
-  const setExcludedInCache = useCallback(
-    (next: number[]) => {
-      qc.setQueryData(['session-detail', id], (old: unknown) => {
-        const o = old as Record<string, unknown> | undefined;
-        if (!o?.dashboard_data) return o;
-        return {
-          ...o,
-          dashboard_data: { ...(o.dashboard_data as Record<string, unknown>), excluded_laps: next },
-        };
-      });
-    },
-    [qc, id],
-  );
-
-  const excludeMut = useMutation({
-    mutationFn: async (segmentIndex: number) => {
-      const s = new Set(excludedLapsRef.current.map((x) => Number(x)));
-      if (s.has(segmentIndex)) s.delete(segmentIndex);
-      else s.add(segmentIndex);
-      const next = [...s].sort((a, b) => a - b);
-      return apiPatch<{ ok?: boolean; excluded_laps: number[] }>(`/api/sessions/${id!}`, {
-        excluded_laps: next,
-      });
-    },
-    onMutate: async (segmentIndex) => {
-      await qc.cancelQueries({ queryKey: ['session-detail', id] });
-      const prevQuery = qc.getQueryData(['session-detail', id]);
-      const s = new Set(excludedLapsRef.current.map((x) => Number(x)));
-      if (s.has(segmentIndex)) s.delete(segmentIndex);
-      else s.add(segmentIndex);
-      const next = [...s].sort((a, b) => a - b);
-      setExcludedInCache(next);
-      return { prevQuery };
-    },
-    onError: (_err, _seg, ctx) => {
-      if (ctx?.prevQuery) qc.setQueryData(['session-detail', id], ctx.prevQuery);
-    },
-    onSuccess: (res) => {
-      if (Array.isArray(res.excluded_laps)) {
-        setExcludedInCache(res.excluded_laps);
-      }
-    },
-  });
+  const [pendingExclusions, setPendingExclusions] = useState<number[] | null>(null);
+  const excludedLaps = pendingExclusions ?? savedExcludedLaps;
+  const hasExclusionDraft = pendingExclusions !== null;
 
   const onToggleExcludeLap = useCallback(
     (segmentIndex: number) => {
-      if (!id) return;
-      excludeMut.mutate(segmentIndex);
+      setPendingExclusions((prev) =>
+        toggleExcludedLap(prev ?? savedExcludedLaps, segmentIndex),
+      );
     },
-    [id, excludeMut],
+    [savedExcludedLaps],
   );
+
+  const applyExclusionsMut = useMutation({
+    mutationFn: (laps: number[]) =>
+      apiPatch<{ ok?: boolean; excluded_laps: number[] }>(`/api/sessions/${id!}`, {
+        excluded_laps: laps,
+      }),
+    onSuccess: () => {
+      setPendingExclusions(null);
+      qc.invalidateQueries({ queryKey: ['session-detail', id] });
+    },
+  });
+
+  const onApplyExclusions = useCallback(() => {
+    if (pendingExclusions == null || !id) return;
+    applyExclusionsMut.mutate(pendingExclusions);
+  }, [pendingExclusions, id, applyExclusionsMut]);
+
+  const onDiscardExclusions = useCallback(() => {
+    setPendingExclusions(null);
+  }, []);
 
   const referenceLapOptions = useMemo(() => {
     const splits = dashData?.lap_splits;
@@ -601,6 +583,10 @@ export default function SessionDetailPage() {
                   distanceUnit={distanceUnit}
                   excludedLaps={excludedLaps}
                   onToggleExcludeLap={onToggleExcludeLap}
+                  hasExclusionDraft={hasExclusionDraft}
+                  onApplyExclusions={onApplyExclusions}
+                  onDiscardExclusions={onDiscardExclusions}
+                  applyExclusionsPending={applyExclusionsMut.isPending}
                 />
                 <DashboardTemplateModal
                   open={templateOpen}
@@ -703,6 +689,10 @@ export default function SessionDetailPage() {
                   pressureUnit={pressureUnit}
                   excludedLaps={excludedLaps}
                   onToggleExcludeLap={onToggleExcludeLap}
+                  hasExclusionDraft={hasExclusionDraft}
+                  onApplyExclusions={onApplyExclusions}
+                  onDiscardExclusions={onDiscardExclusions}
+                  applyExclusionsPending={applyExclusionsMut.isPending}
                   sessionMeta={{
                     driver: data.car_driver?.driver_name ?? String(session.driver ?? ''),
                     track: String(session.track ?? ''),

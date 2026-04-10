@@ -24,6 +24,10 @@ interface LapTimesModuleProps {
   onLapClick?: (lap: number) => void;
   excludedLaps?: number[];
   onToggleExcludeLap?: (segmentIndex: number) => void;
+  hasExclusionDraft?: boolean;
+  onApplyExclusions?: () => void;
+  onDiscardExclusions?: () => void;
+  applyExclusionsPending?: boolean;
 }
 
 /** `m:ss.SSS` if ≥ 60s, else `ss.SSS`. */
@@ -54,6 +58,10 @@ export default function LapTimesModule({
   onLapClick,
   excludedLaps,
   onToggleExcludeLap,
+  hasExclusionDraft,
+  onApplyExclusions,
+  onDiscardExclusions,
+  applyExclusionsPending,
 }: LapTimesModuleProps) {
   if (!lapTimes.length) return <p className="muted">No lap times.</p>;
 
@@ -73,15 +81,36 @@ export default function LapTimesModule({
   const analysisBest = bestIdx >= 0 ? bestTime : null;
 
   return (
-    <table className="data-table data-table-sm lap-times-table">
-      <thead>
-        <tr>
-          {onToggleExcludeLap && <th className="lap-excl-col" title="Exclude from analysis">Excl</th>}
-          <th>Lap</th>
-          <th>Time</th>
-          <th>Δ vs best</th>
-        </tr>
-      </thead>
+    <>
+      {hasExclusionDraft && onApplyExclusions && (
+        <div className="lap-excl-actions">
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={onApplyExclusions}
+            disabled={applyExclusionsPending}
+          >
+            {applyExclusionsPending ? 'Applying…' : 'Recalc metrics'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={onDiscardExclusions}
+            disabled={applyExclusionsPending}
+          >
+            Discard
+          </button>
+        </div>
+      )}
+      <table className="data-table data-table-sm lap-times-table">
+        <thead>
+          <tr>
+            {onToggleExcludeLap && <th className="lap-excl-col" title="Exclude from analysis">Excl</th>}
+            <th>Lap</th>
+            <th>Time</th>
+            <th>Δ vs best</th>
+          </tr>
+        </thead>
       <tbody>
         {lapTimes.map((lt, i) => {
           const segIdx = lt.segment_index ?? i;
@@ -123,6 +152,7 @@ export default function LapTimesModule({
           );
         })}
       </tbody>
-    </table>
+      </table>
+    </>
   );
 }

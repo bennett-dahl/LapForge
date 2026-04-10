@@ -2110,6 +2110,13 @@ thead .sm-col-fixed { z-index: 3; background: var(--bg, #1a1a2e); }
   opacity: 0.65;
 }
 .lap-row-excluded td:not(.lap-excl-col) { opacity: 0.45; }
+.lap-excl-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  margin-bottom: 0.25rem;
+}
 .lap-time-excluded {
   text-decoration: line-through;
   color: var(--muted);

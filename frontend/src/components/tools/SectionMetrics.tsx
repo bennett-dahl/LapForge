@@ -43,6 +43,10 @@ export interface SectionMetricsProps {
   /** 0-based segment indices excluded from virtual best / improvement averages (includes out-lap 0). */
   excludedLaps?: number[];
   onToggleExcludeLap?: (segmentIndex: number) => void;
+  hasExclusionDraft?: boolean;
+  onApplyExclusions?: () => void;
+  onDiscardExclusions?: () => void;
+  applyExclusionsPending?: boolean;
   sessionMeta?: SessionMeta;
 }
 
@@ -242,6 +246,10 @@ export default function SectionMetrics({
   onZoomToLap,
   excludedLaps,
   onToggleExcludeLap,
+  hasExclusionDraft,
+  onApplyExclusions,
+  onDiscardExclusions,
+  applyExclusionsPending,
   sessionMeta,
 }: SectionMetricsProps) {
   const [selectedCell, setSelectedCell] = useState<{ li: number; si: number } | null>(null);
@@ -597,6 +605,27 @@ export default function SectionMetrics({
           ))}
         </div>
       </div>
+
+      {hasExclusionDraft && onApplyExclusions && (
+        <div className="lap-excl-actions">
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={onApplyExclusions}
+            disabled={applyExclusionsPending}
+          >
+            {applyExclusionsPending ? 'Applying…' : 'Recalc metrics'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={onDiscardExclusions}
+            disabled={applyExclusionsPending}
+          >
+            Discard
+          </button>
+        </div>
+      )}
 
       <div className="section-grid-scroll">
         <table className="section-grid">
